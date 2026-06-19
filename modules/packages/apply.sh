@@ -1,2 +1,2 @@
-# 第一阶段占位脚本。第三阶段会调用 apt 适配器。
-printf '%s\n' "apply: packages placeholder"
+# Phase 2 不执行 apt 操作。
+yatta_log_info "跳过 packages 占位执行；真实逻辑将在 Phase 3 实现。"

@@ -24,13 +24,23 @@ func TestBuildGeneratesScript(t *testing.T) {
 	for _, want := range []string{
 		"#!/usr/bin/env bash\n",
 		"此文件由 yatta build 生成，请勿手写修改。",
+		"fixture_runtime_prelude()",
 		"fixture runtime",
+		"fixture_runtime_ui()",
+		"fixture_runtime_system()",
+		"fixture_runtime_adapter()",
 		"yatta_module_alpha_prompt()",
 		"yatta_module_alpha_apply()",
+		"yatta_register_generated_modules()",
+		"yatta_module_register 'alpha' 'Alpha' 'yatta_module_alpha_prompt' 'yatta_module_alpha_apply'",
+		"yatta_main \"$@\"",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("生成脚本缺少 %q:\n%s", want, text)
 		}
+	}
+	if strings.Index(text, "fixture_runtime_prelude()") > strings.Index(text, "fixture runtime") {
+		t.Fatalf("runtime core 前置文件应先于 main.sh 拼接:\n%s", text)
 	}
 }
 

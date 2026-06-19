@@ -1,3 +1,16 @@
 {
-  "brand": "Yatta! server init"
+  "brand": "Yatta! server init",
+  "tagline": "把新 Ubuntu 服务器整理到可日常使用的基础状态。",
+  "sections": {
+    "collect": "配置收集",
+    "plan": "执行计划",
+    "apply": "开始执行",
+    "summary": "结果摘要"
+  },
+  "confirm_apply": "确认后才会开始修改系统。现在执行计划吗？",
+  "cancelled": "已取消执行，没有修改系统。",
+  "system_check": {
+    "table_headers": ["项目", "状态", "说明"],
+    "network_warn": "暂未确认网络连通性，后续 apt 操作可能失败"
+  }
 }

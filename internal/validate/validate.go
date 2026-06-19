@@ -64,7 +64,43 @@ func checkProject(root string, report *Report) {
 }
 
 func checkRuntime(root string, report *Report) {
+	requiredDirs := []string{
+		filepath.Join("runtime", "core"),
+		filepath.Join("runtime", "ui"),
+		filepath.Join("runtime", "system"),
+		filepath.Join("runtime", "adapter"),
+	}
+	for _, dir := range requiredDirs {
+		path := filepath.Join(root, dir)
+		info, err := os.Stat(path)
+		if err != nil {
+			report.add(Error, "runtime", slash(dir), "required directory is missing")
+			continue
+		}
+		if !info.IsDir() {
+			report.add(Error, "runtime", slash(dir), "must be a directory")
+		}
+	}
 	checkNonEmptyFile(filepath.Join(root, "runtime", "core", "main.sh"), "runtime", "runtime/core/main.sh", report)
+	checkRuntimeShellFiles(root, report)
+}
+
+func checkRuntimeShellFiles(root string, report *Report) {
+	runtimeRoot := filepath.Join(root, "runtime")
+	_ = filepath.WalkDir(runtimeRoot, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".sh" {
+			return nil
+		}
+		rel, relErr := filepath.Rel(root, path)
+		if relErr != nil {
+			rel = path
+		}
+		checkNonEmptyFile(path, "runtime", slash(rel), report)
+		return nil
+	})
 }
 
 func checkLocale(root string, report *Report) {

@@ -1,2 +1,2 @@
-# 第一阶段占位脚本。第三阶段会询问是否保留或修改主机名。
-printf '%s\n' "plan: hostname placeholder"
+# Phase 2 只登记占位计划，真实 hostname 询问与修改留到 Phase 3。
+yatta_plan_add "hostname" "info" "Phase 3 将询问是否保留或修改主机名。"
