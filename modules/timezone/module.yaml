@@ -1,8 +1,8 @@
 id: timezone
 name: Timezone
-description: Configure system timezone placeholder
+description: Configure system timezone
 default_enabled: true
-order: 40
+order: 120
 requires: []
 conflicts: []
 supports:

@@ -1,8 +1,8 @@
 id: hostname
 name: Hostname
-description: Configure system hostname placeholder
+description: Configure system hostname
 default_enabled: true
-order: 20
+order: 110
 requires: []
 conflicts: []
 supports:

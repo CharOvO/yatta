@@ -1,8 +1,8 @@
 id: user
 name: User
-description: Create a non-root sudo user placeholder
+description: Create a non-root sudo user
 default_enabled: true
-order: 30
+order: 130
 requires: []
 conflicts: []
 supports:

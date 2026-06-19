@@ -24,6 +24,25 @@ yatta_apt_install() {
   yatta_run_command apt-get install -y "$@"
 }
 
+yatta_apt_install_missing() {
+  local packages=("$@")
+  if [[ "${#packages[@]}" -eq 0 ]]; then
+    yatta_log_ok "没有缺失的软件包需要安装。"
+    return 0
+  fi
+  yatta_apt_install "${packages[@]}"
+}
+
+yatta_ensure_package_installed() {
+  local package="$1"
+  if yatta_package_installed "$package"; then
+    yatta_log_ok "软件包已安装：${package}"
+    return 0
+  fi
+  yatta_apt_update || return 1
+  yatta_apt_install "$package"
+}
+
 yatta_ufw_default_deny_incoming() {
   yatta_run_command ufw default deny incoming
 }
@@ -54,7 +73,16 @@ yatta_set_hostname() {
 
 yatta_add_sudo_user() {
   local username="$1"
-  yatta_run_command adduser "$username"
+  yatta_run_command adduser "$username" || return 1
+  yatta_ensure_sudo_group "$username"
+}
+
+yatta_ensure_sudo_group() {
+  local username="$1"
+  if yatta_user_in_group "$username" "sudo"; then
+    yatta_log_ok "用户 ${username} 已在 sudo 组中。"
+    return 0
+  fi
   yatta_run_command usermod -aG sudo "$username"
 }
 

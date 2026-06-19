@@ -22,7 +22,13 @@ yatta_run_applies() {
     id="${YATTA_MODULE_IDS[$index]}"
     name="${YATTA_MODULE_NAMES[$index]}"
     apply_fn="${YATTA_MODULE_APPLY_FNS[$index]}"
-    if ! yatta_ui_spinner "执行 ${name}" yatta_call_function "$apply_fn"; then
+    if [[ "$id" == "user" ]]; then
+      yatta_log_info "执行 ${name}"
+      yatta_call_function "$apply_fn"
+    else
+      yatta_ui_spinner "执行 ${name}" yatta_call_function "$apply_fn"
+    fi
+    if [[ "$?" -ne 0 ]]; then
       yatta_log_error "模块 ${id} 执行失败，后续模块已停止。"
       return 1
     fi
@@ -31,6 +37,7 @@ yatta_run_applies() {
 }
 
 yatta_main() {
+  local apply_default="n"
   yatta_ui_init
   yatta_ui_brand
   yatta_preflight || return 1
@@ -46,7 +53,10 @@ yatta_main() {
 
   yatta_ui_section "执行计划"
   yatta_plan_show
-  if ! yatta_ui_confirm "确认后才会开始修改系统。现在执行计划吗？" "n"; then
+  if yatta_test_mode && yatta_dry_run; then
+    apply_default="${YATTA_TEST_CONFIRM_APPLY:-y}"
+  fi
+  if ! yatta_ui_confirm "确认后才会开始修改系统。现在执行计划吗？" "$apply_default"; then
     yatta_log_warn "已取消执行，没有修改系统。"
     return 0
   fi

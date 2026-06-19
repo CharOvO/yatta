@@ -91,9 +91,10 @@ func runListModules(root string, stdout, stderr io.Writer) int {
 		return ExitUsage
 	}
 	writer := tabwriter.NewWriter(stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(writer, "ID\tNAME\tENABLED\tDISTROS")
+	fmt.Fprintln(writer, "ORDER\tID\tNAME\tENABLED\tDISTROS")
 	for _, mod := range modules {
-		fmt.Fprintf(writer, "%s\t%s\t%t\t%s\n",
+		fmt.Fprintf(writer, "%d\t%s\t%s\t%t\t%s\n",
+			mod.Metadata.Order,
 			mod.Metadata.ID,
 			mod.Metadata.Name,
 			mod.Metadata.DefaultEnabled,

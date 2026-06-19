@@ -1,2 +1,36 @@
-# Phase 2 不执行 UFW 操作，避免提前影响 SSH 可连接性。
-yatta_log_info "跳过 ufw 占位执行；真实逻辑将在 Phase 3 实现。"
+# 防火墙是远程连接敏感操作，apply 阶段再次校验 SSH 端口后才启用。
+if [[ "${YATTA_UFW_ENABLE:-0}" != "1" ]]; then
+  yatta_log_warn "已跳过 UFW 配置。"
+  return 0
+fi
+
+if ! yatta_valid_port "${YATTA_UFW_SSH_PORT:-}"; then
+  yatta_log_error "SSH 放行端口无效，已停止，避免锁定远程连接。"
+  return 1
+fi
+
+if yatta_package_installed "ufw"; then
+  yatta_log_ok "ufw 软件包已安装。"
+elif [[ "${YATTA_UFW_INSTALL_PACKAGE:-0}" == "1" ]]; then
+  yatta_ensure_package_installed "ufw" || return 1
+else
+  yatta_log_error "未安装 ufw，且未确认自动安装，已停止。"
+  return 1
+fi
+
+if [[ "${YATTA_UFW_SET_DENY_INCOMING:-0}" == "1" ]]; then
+  yatta_ufw_default_deny_incoming || return 1
+fi
+
+if [[ "${YATTA_UFW_SET_ALLOW_OUTGOING:-0}" == "1" ]]; then
+  yatta_ufw_default_allow_outgoing || return 1
+fi
+
+yatta_ufw_allow_port "$YATTA_UFW_SSH_PORT" "tcp" || return 1
+
+if [[ "${YATTA_UFW_ALLOW_WEB:-0}" == "1" ]]; then
+  yatta_ufw_allow_port "80" "tcp" || return 1
+  yatta_ufw_allow_port "443" "tcp" || return 1
+fi
+
+yatta_ufw_enable

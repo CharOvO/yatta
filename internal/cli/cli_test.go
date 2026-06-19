@@ -50,7 +50,7 @@ func TestRunValidateAndListModules(t *testing.T) {
 		if code != ExitOK {
 			t.Fatalf("list-modules exit = %d stderr=%q", code, stderr.String())
 		}
-		if !strings.Contains(stdout.String(), "ID") || !strings.Contains(stdout.String(), "alpha") {
+		if !strings.Contains(stdout.String(), "ORDER") || !strings.Contains(stdout.String(), "20") || !strings.Contains(stdout.String(), "alpha") {
 			t.Fatalf("list output missing expected table: %q", stdout.String())
 		}
 	})

@@ -95,7 +95,13 @@ yatta_run_applies() {
     id="${YATTA_MODULE_IDS[$index]}"
     name="${YATTA_MODULE_NAMES[$index]}"
     apply_fn="${YATTA_MODULE_APPLY_FNS[$index]}"
-    if ! yatta_ui_spinner "执行 ${name}" yatta_call_function "$apply_fn"; then
+    if [[ "$id" == "user" ]]; then
+      yatta_log_info "执行 ${name}"
+      yatta_call_function "$apply_fn"
+    else
+      yatta_ui_spinner "执行 ${name}" yatta_call_function "$apply_fn"
+    fi
+    if [[ "$?" -ne 0 ]]; then
       yatta_log_error "模块 ${id} 执行失败，后续模块已停止。"
       return 1
     fi
@@ -104,6 +110,7 @@ yatta_run_applies() {
 }
 
 yatta_main() {
+  local apply_default="n"
   yatta_ui_init
   yatta_ui_brand
   yatta_preflight || return 1
@@ -119,7 +126,10 @@ yatta_main() {
 
   yatta_ui_section "执行计划"
   yatta_plan_show
-  if ! yatta_ui_confirm "确认后才会开始修改系统。现在执行计划吗？" "n"; then
+  if yatta_test_mode && yatta_dry_run; then
+    apply_default="${YATTA_TEST_CONFIRM_APPLY:-y}"
+  fi
+  if ! yatta_ui_confirm "确认后才会开始修改系统。现在执行计划吗？" "$apply_default"; then
     yatta_log_warn "已取消执行，没有修改系统。"
     return 0
   fi
@@ -428,6 +438,137 @@ yatta_network_status() {
   return 1
 }
 
+yatta_current_hostname() {
+  if yatta_test_mode; then
+    printf '%s\n' "${YATTA_TEST_HOSTNAME:-yatta-test-host}"
+    return 0
+  fi
+  hostname
+}
+
+yatta_valid_hostname() {
+  local hostname="$1"
+  local label
+  local labels
+  [[ -n "$hostname" && "${#hostname}" -le 253 ]] || return 1
+  [[ "$hostname" != .* && "$hostname" != *. && "$hostname" != *..* ]] || return 1
+  IFS='.' read -r -a labels <<<"$hostname"
+  for label in "${labels[@]}"; do
+    [[ -n "$label" && "${#label}" -le 63 ]] || return 1
+    [[ "$label" =~ ^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?$ ]] || return 1
+  done
+}
+
+yatta_current_timezone() {
+  if yatta_test_mode; then
+    printf '%s\n' "${YATTA_TEST_TIMEZONE:-UTC}"
+    return 0
+  fi
+  if yatta_command_exists timedatectl; then
+    timedatectl show -p Timezone --value 2>/dev/null && return 0
+  fi
+  if [[ -r /etc/timezone ]]; then
+    head -n 1 /etc/timezone
+    return 0
+  fi
+  printf '%s\n' "未知"
+}
+
+yatta_timezone_available() {
+  local timezone="$1"
+  if [[ -z "$timezone" || "$timezone" == /* || "$timezone" == *..* ]]; then
+    return 1
+  fi
+  if yatta_test_mode; then
+    [[ "${YATTA_TEST_TIMEZONE_STATUS:-ok}" == "ok" ]]
+    return $?
+  fi
+  if [[ -f "/usr/share/zoneinfo/${timezone}" ]]; then
+    return 0
+  fi
+  yatta_command_exists timedatectl && timedatectl list-timezones 2>/dev/null | grep -Fx -- "$timezone" >/dev/null
+}
+
+yatta_user_exists() {
+  local username="$1"
+  if yatta_test_mode; then
+    [[ " ${YATTA_TEST_EXISTING_USERS:-root} " == *" ${username} "* ]]
+    return $?
+  fi
+  getent passwd "$username" >/dev/null 2>&1
+}
+
+yatta_user_in_group() {
+  local username="$1"
+  local group="$2"
+  if yatta_test_mode; then
+    [[ "$group" == "sudo" && " ${YATTA_TEST_SUDO_USERS:-root} " == *" ${username} "* ]]
+    return $?
+  fi
+  id -nG "$username" 2>/dev/null | tr ' ' '\n' | grep -Fx -- "$group" >/dev/null
+}
+
+yatta_package_installed() {
+  local package="$1"
+  if yatta_test_mode; then
+    [[ " ${YATTA_TEST_INSTALLED_PACKAGES:-} " == *" ${package} "* ]]
+    return $?
+  fi
+  dpkg-query -W -f='${Status}' "$package" 2>/dev/null | grep -Fx "install ok installed" >/dev/null
+}
+
+yatta_missing_packages() {
+  local package
+  for package in "$@"; do
+    if ! yatta_package_installed "$package"; then
+      printf '%s\n' "$package"
+    fi
+  done
+}
+
+yatta_valid_port() {
+  local port="$1"
+  [[ "$port" =~ ^[0-9]+$ ]] && ((port >= 1 && port <= 65535))
+}
+
+yatta_detect_ssh_port() {
+  local files=("/etc/ssh/sshd_config")
+  local conf
+  local detected
+  if yatta_test_mode; then
+    printf '%s\n' "${YATTA_TEST_SSH_PORT:-22}"
+    return 0
+  fi
+  if yatta_command_exists sshd; then
+    detected="$(sshd -T 2>/dev/null | awk '$1 == "port" && $2 ~ /^[0-9]+$/ { print $2; exit }')"
+    if [[ -n "$detected" ]]; then
+      printf '%s\n' "$detected"
+      return 0
+    fi
+  fi
+  if [[ -d /etc/ssh/sshd_config.d ]]; then
+    for conf in /etc/ssh/sshd_config.d/*.conf; do
+      [[ -e "$conf" ]] && files+=("$conf")
+    done
+  fi
+  awk '
+    {
+      sub(/[[:space:]]*#.*/, "")
+      if (tolower($1) == "port" && $2 ~ /^[0-9]+$/) {
+        print $2
+        exit
+      }
+    }
+  ' "${files[@]}" 2>/dev/null | {
+    IFS= read -r detected || detected=""
+    if [[ -n "$detected" ]]; then
+      printf '%s\n' "$detected"
+    else
+      printf '%s\n' "22"
+    fi
+  }
+}
+
 yatta_preflight() {
   if [[ -z "${BASH_VERSION:-}" ]]; then
     printf '%s\n' "Yatta 必须使用 Bash 运行，请执行：sudo bash yatta.sh" >&2
@@ -517,6 +658,25 @@ yatta_apt_install() {
   yatta_run_command apt-get install -y "$@"
 }
 
+yatta_apt_install_missing() {
+  local packages=("$@")
+  if [[ "${#packages[@]}" -eq 0 ]]; then
+    yatta_log_ok "没有缺失的软件包需要安装。"
+    return 0
+  fi
+  yatta_apt_install "${packages[@]}"
+}
+
+yatta_ensure_package_installed() {
+  local package="$1"
+  if yatta_package_installed "$package"; then
+    yatta_log_ok "软件包已安装：${package}"
+    return 0
+  fi
+  yatta_apt_update || return 1
+  yatta_apt_install "$package"
+}
+
 yatta_ufw_default_deny_incoming() {
   yatta_run_command ufw default deny incoming
 }
@@ -547,7 +707,16 @@ yatta_set_hostname() {
 
 yatta_add_sudo_user() {
   local username="$1"
-  yatta_run_command adduser "$username"
+  yatta_run_command adduser "$username" || return 1
+  yatta_ensure_sudo_group "$username"
+}
+
+yatta_ensure_sudo_group() {
+  local username="$1"
+  if yatta_user_in_group "$username" "sudo"; then
+    yatta_log_ok "用户 ${username} 已在 sudo 组中。"
+    return 0
+  fi
   yatta_run_command usermod -aG sudo "$username"
 }
 
@@ -596,60 +765,308 @@ fi
 }
 
 yatta_module_hostname_prompt() {
-# Phase 2 只登记占位计划，真实 hostname 询问与修改留到 Phase 3。
-yatta_plan_add "hostname" "info" "Phase 3 将询问是否保留或修改主机名。"
+# hostname 模块只在询问阶段读取当前主机名并保存用户选择，真正修改留给 apply。
+YATTA_HOSTNAME_CURRENT="$(yatta_current_hostname)"
+YATTA_HOSTNAME_ACTION="keep"
+YATTA_HOSTNAME_TARGET="$YATTA_HOSTNAME_CURRENT"
+
+choice="$(yatta_ui_select "主机名设置" 0 "保留当前主机名：${YATTA_HOSTNAME_CURRENT}" "设置新的主机名")"
+case "$choice" in
+  设置新的主机名)
+    while true; do
+      YATTA_HOSTNAME_TARGET="$(yatta_ui_input "新的主机名" "$YATTA_HOSTNAME_CURRENT")"
+      if yatta_valid_hostname "$YATTA_HOSTNAME_TARGET"; then
+        YATTA_HOSTNAME_ACTION="set"
+        break
+      fi
+      yatta_log_warn "主机名只能包含字母、数字、短横线和点，且每段不能以短横线开头或结尾。"
+    done
+    ;;
+esac
+
+if [[ "$YATTA_HOSTNAME_ACTION" == "keep" ]]; then
+  yatta_plan_add "hostname" "ok" "保留当前主机名：${YATTA_HOSTNAME_CURRENT}"
+elif [[ "$YATTA_HOSTNAME_TARGET" == "$YATTA_HOSTNAME_CURRENT" ]]; then
+  yatta_plan_add "hostname" "ok" "目标主机名已是当前值：${YATTA_HOSTNAME_TARGET}"
+else
+  yatta_plan_add "hostname" "info" "将主机名设置为：${YATTA_HOSTNAME_TARGET}"
+fi
 }
 
 yatta_module_hostname_apply() {
-# Phase 2 不执行真实 hostname 修改，避免提前越过默认模块阶段边界。
-yatta_log_info "跳过 hostname 占位执行；真实逻辑将在 Phase 3 实现。"
-}
+# apply 阶段重新检查当前值，避免重复运行时执行不必要的 hostnamectl。
+if [[ "${YATTA_HOSTNAME_ACTION:-keep}" == "keep" ]]; then
+  yatta_log_ok "保留当前主机名。"
+  return 0
+fi
 
-yatta_module_user_prompt() {
-# Phase 2 只登记占位计划，真实用户创建询问留到 Phase 3。
-yatta_plan_add "user" "info" "Phase 3 将安全询问非 root sudo 用户创建选项。"
-}
+if ! yatta_valid_hostname "${YATTA_HOSTNAME_TARGET:-}"; then
+  yatta_log_error "目标主机名无效，已停止。"
+  return 1
+fi
 
-yatta_module_user_apply() {
-# Phase 2 不创建用户，避免在计划确认框架完成前引入敏感输入处理。
-yatta_log_info "跳过 user 占位执行；真实逻辑将在 Phase 3 实现。"
+current="$(yatta_current_hostname)"
+if [[ "$current" == "$YATTA_HOSTNAME_TARGET" ]]; then
+  yatta_log_ok "主机名已是期望值：${YATTA_HOSTNAME_TARGET}"
+  return 0
+fi
+
+yatta_set_hostname "$YATTA_HOSTNAME_TARGET"
 }
 
 yatta_module_timezone_prompt() {
-# Phase 2 只登记占位计划，真实时区询问留到 Phase 3。
-yatta_plan_add "timezone" "info" "Phase 3 将询问是否设置时区，默认 Asia/Shanghai。"
+# timezone 模块只保存时区选择，实际 timedatectl 修改在 apply 阶段完成。
+YATTA_TIMEZONE_CURRENT="$(yatta_current_timezone)"
+YATTA_TIMEZONE_ACTION="set"
+YATTA_TIMEZONE_TARGET="Asia/Shanghai"
+
+choice="$(yatta_ui_select "时区设置" 0 "设置为 Asia/Shanghai" "输入其他时区" "跳过时区设置")"
+case "$choice" in
+  输入其他时区)
+    while true; do
+      YATTA_TIMEZONE_TARGET="$(yatta_ui_input "时区名称" "$YATTA_TIMEZONE_CURRENT")"
+      if yatta_timezone_available "$YATTA_TIMEZONE_TARGET"; then
+        break
+      fi
+      yatta_log_warn "未找到该时区，请使用类似 Asia/Shanghai 的 IANA 时区名称。"
+    done
+    ;;
+  跳过时区设置)
+    YATTA_TIMEZONE_ACTION="skip"
+    ;;
+esac
+
+if [[ "$YATTA_TIMEZONE_ACTION" == "skip" ]]; then
+  yatta_plan_add "timezone" "ok" "跳过时区设置，当前时区：${YATTA_TIMEZONE_CURRENT}"
+elif [[ "$YATTA_TIMEZONE_TARGET" == "$YATTA_TIMEZONE_CURRENT" ]]; then
+  yatta_plan_add "timezone" "ok" "时区已是期望值：${YATTA_TIMEZONE_TARGET}"
+else
+  yatta_plan_add "timezone" "info" "将时区设置为：${YATTA_TIMEZONE_TARGET}"
+fi
 }
 
 yatta_module_timezone_apply() {
-# Phase 2 不执行真实时区修改。
-yatta_log_info "跳过 timezone 占位执行；真实逻辑将在 Phase 3 实现。"
+# apply 阶段重新检查当前时区，重复运行时尽量不做无意义修改。
+if [[ "${YATTA_TIMEZONE_ACTION:-skip}" == "skip" ]]; then
+  yatta_log_ok "已跳过时区设置。"
+  return 0
+fi
+
+if ! yatta_timezone_available "${YATTA_TIMEZONE_TARGET:-}"; then
+  yatta_log_error "目标时区不可用，已停止。"
+  return 1
+fi
+
+current="$(yatta_current_timezone)"
+if [[ "$current" == "$YATTA_TIMEZONE_TARGET" ]]; then
+  yatta_log_ok "时区已是期望值：${YATTA_TIMEZONE_TARGET}"
+  return 0
+fi
+
+yatta_set_timezone "$YATTA_TIMEZONE_TARGET"
+}
+
+yatta_module_user_prompt() {
+# user 模块不收集密码；新用户密码交给 apply 阶段的 adduser 交互处理。
+YATTA_USER_ACTION="skip"
+YATTA_USER_NAME=""
+
+if yatta_ui_confirm "是否创建或确认一个非 root sudo 用户？" "y"; then
+  default_user="${SUDO_USER:-deploy}"
+  [[ "$default_user" == "root" ]] && default_user="deploy"
+  while true; do
+    YATTA_USER_NAME="$(yatta_ui_input "sudo 用户名" "$default_user")"
+    if [[ "$YATTA_USER_NAME" == "root" ]]; then
+      yatta_log_warn "root 已存在且不作为本模块创建目标，请输入非 root 用户名。"
+      continue
+    fi
+    if [[ "$YATTA_USER_NAME" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]]; then
+      YATTA_USER_ACTION="ensure"
+      break
+    fi
+    yatta_log_warn "用户名需以小写字母或下划线开头，只包含小写字母、数字、下划线或短横线，最长 32 个字符。"
+  done
+fi
+
+if [[ "$YATTA_USER_ACTION" == "skip" ]]; then
+  yatta_plan_add "user" "warn" "跳过非 root sudo 用户创建。"
+elif yatta_user_exists "$YATTA_USER_NAME"; then
+  if yatta_user_in_group "$YATTA_USER_NAME" "sudo"; then
+    yatta_plan_add "user" "ok" "用户 ${YATTA_USER_NAME} 已存在且已在 sudo 组。"
+  else
+    yatta_plan_add "user" "info" "用户 ${YATTA_USER_NAME} 已存在，将加入 sudo 组。"
+  fi
+else
+  yatta_plan_add "user" "info" "将创建非 root sudo 用户 ${YATTA_USER_NAME}；密码由 adduser 在执行阶段处理。"
+fi
+}
+
+yatta_module_user_apply() {
+# apply 阶段才调用 adduser，让系统工具处理密码，脚本不保存明文密码。
+if [[ "${YATTA_USER_ACTION:-skip}" == "skip" ]]; then
+  yatta_log_warn "已跳过非 root sudo 用户创建。"
+  return 0
+fi
+
+if [[ -z "${YATTA_USER_NAME:-}" || "$YATTA_USER_NAME" == "root" ]]; then
+  yatta_log_error "sudo 用户名无效，已停止。"
+  return 1
+fi
+
+if yatta_user_exists "$YATTA_USER_NAME"; then
+  yatta_log_info "用户 ${YATTA_USER_NAME} 已存在。"
+  yatta_ensure_sudo_group "$YATTA_USER_NAME"
+else
+  yatta_add_sudo_user "$YATTA_USER_NAME"
+fi
 }
 
 yatta_module_packages_prompt() {
-# Phase 2 只登记占位计划，真实 apt 计划留到 Phase 3。
-yatta_plan_add "packages" "info" "Phase 3 将登记基础软件包安装计划。"
+# packages 模块只处理 v1 文档规定的基础包，扩展包留给后续模块。
+YATTA_BASE_PACKAGES=(curl wget git vim unzip ca-certificates gnupg lsb-release)
+YATTA_PACKAGES_MISSING=()
+YATTA_PACKAGES_INSTALL="0"
+
+while IFS= read -r package; do
+  [[ -n "$package" ]] && YATTA_PACKAGES_MISSING+=("$package")
+done < <(yatta_missing_packages "${YATTA_BASE_PACKAGES[@]}")
+
+if [[ "${#YATTA_PACKAGES_MISSING[@]}" -eq 0 ]]; then
+  yatta_plan_add "packages" "ok" "基础软件包已全部安装。"
+elif yatta_ui_confirm "检测到缺失基础软件包：${YATTA_PACKAGES_MISSING[*]}。是否安装？" "y"; then
+  YATTA_PACKAGES_INSTALL="1"
+  yatta_plan_add "packages" "info" "将安装基础软件包：${YATTA_PACKAGES_MISSING[*]}"
+else
+  yatta_plan_add "packages" "warn" "跳过基础软件包安装，缺失：${YATTA_PACKAGES_MISSING[*]}"
+fi
 }
 
 yatta_module_packages_apply() {
-# Phase 2 不执行 apt 操作。
-yatta_log_info "跳过 packages 占位执行；真实逻辑将在 Phase 3 实现。"
+# apply 阶段重新计算缺失包，避免重复运行时重新安装已满足的软件包。
+if [[ "${YATTA_PACKAGES_INSTALL:-0}" != "1" ]]; then
+  yatta_log_warn "已跳过基础软件包安装。"
+  return 0
+fi
+
+fresh_missing=()
+while IFS= read -r package; do
+  [[ -n "$package" ]] && fresh_missing+=("$package")
+done < <(yatta_missing_packages "${YATTA_BASE_PACKAGES[@]}")
+
+if [[ "${#fresh_missing[@]}" -eq 0 ]]; then
+  yatta_log_ok "基础软件包已全部安装。"
+  return 0
+fi
+
+yatta_apt_update || return 1
+yatta_apt_install_missing "${fresh_missing[@]}"
 }
 
 yatta_module_ufw_prompt() {
-# Phase 2 只登记占位计划，真实防火墙询问留到 Phase 3。
-yatta_plan_add "ufw" "info" "Phase 3 将确认 SSH 放行策略和 Web 端口选项。"
+# UFW 是收尾模块，必须先确认并登记 SSH 放行策略，再允许启用防火墙。
+YATTA_UFW_ENABLE="0"
+YATTA_UFW_SSH_PORT="$(yatta_detect_ssh_port)"
+YATTA_UFW_INSTALL_PACKAGE="0"
+YATTA_UFW_SET_DENY_INCOMING="0"
+YATTA_UFW_SET_ALLOW_OUTGOING="0"
+YATTA_UFW_ALLOW_WEB="0"
+
+yatta_log_info "启用 UFW 时将自动执行：ufw default deny incoming；ufw default allow outgoing。启用前仍会先放行 SSH。"
+
+if ! yatta_valid_port "$YATTA_UFW_SSH_PORT"; then
+  yatta_log_warn "检测到的 SSH 端口无效，将默认使用 22，请确认。"
+  YATTA_UFW_SSH_PORT="22"
+fi
+
+while true; do
+  YATTA_UFW_SSH_PORT="$(yatta_ui_input "确认需要放行的 SSH 端口" "$YATTA_UFW_SSH_PORT")"
+  if yatta_valid_port "$YATTA_UFW_SSH_PORT"; then
+    break
+  fi
+  yatta_log_warn "端口必须是 1 到 65535 之间的数字。"
+done
+
+if yatta_ui_confirm "是否启用 UFW 防火墙？" "y"; then
+  YATTA_UFW_ENABLE="1"
+  YATTA_UFW_SET_DENY_INCOMING="1"
+  YATTA_UFW_SET_ALLOW_OUTGOING="1"
+  if yatta_package_installed "ufw"; then
+    yatta_plan_add "ufw" "ok" "ufw 软件包已安装。"
+  elif yatta_ui_confirm "未检测到 ufw 软件包，是否自动安装？" "y"; then
+    YATTA_UFW_INSTALL_PACKAGE="1"
+  else
+    yatta_log_warn "未安装 ufw 且选择不自动安装，本次将跳过 UFW 配置。"
+    YATTA_UFW_ENABLE="0"
+  fi
+fi
+
+if [[ "$YATTA_UFW_ENABLE" == "1" ]]; then
+  if yatta_ui_confirm "是否开放 HTTP/HTTPS 端口 80/443？" "n"; then
+    YATTA_UFW_ALLOW_WEB="1"
+  fi
+fi
+
+if [[ "$YATTA_UFW_ENABLE" != "1" ]]; then
+  yatta_plan_add "ufw" "warn" "跳过 UFW 配置。"
+else
+  yatta_plan_add "ufw" "info" "确认 SSH 放行端口：${YATTA_UFW_SSH_PORT}/tcp"
+  if [[ "$YATTA_UFW_INSTALL_PACKAGE" == "1" ]]; then
+    yatta_plan_add "ufw" "info" "将安装 ufw 软件包。"
+  fi
+  yatta_plan_add "ufw" "info" "执行固定默认策略：ufw default deny incoming"
+  yatta_plan_add "ufw" "info" "执行固定默认策略：ufw default allow outgoing"
+  yatta_plan_add "ufw" "info" "启用 UFW 前放行 SSH：${YATTA_UFW_SSH_PORT}/tcp"
+  if [[ "$YATTA_UFW_ALLOW_WEB" == "1" ]]; then
+    yatta_plan_add "ufw" "info" "开放 HTTP/HTTPS：80/tcp、443/tcp"
+  fi
+  yatta_plan_add "ufw" "warn" "启用 UFW。请确认当前 SSH 连接端口已放行。"
+fi
 }
 
 yatta_module_ufw_apply() {
-# Phase 2 不执行 UFW 操作，避免提前影响 SSH 可连接性。
-yatta_log_info "跳过 ufw 占位执行；真实逻辑将在 Phase 3 实现。"
+# 防火墙是远程连接敏感操作，apply 阶段再次校验 SSH 端口后才启用。
+if [[ "${YATTA_UFW_ENABLE:-0}" != "1" ]]; then
+  yatta_log_warn "已跳过 UFW 配置。"
+  return 0
+fi
+
+if ! yatta_valid_port "${YATTA_UFW_SSH_PORT:-}"; then
+  yatta_log_error "SSH 放行端口无效，已停止，避免锁定远程连接。"
+  return 1
+fi
+
+if yatta_package_installed "ufw"; then
+  yatta_log_ok "ufw 软件包已安装。"
+elif [[ "${YATTA_UFW_INSTALL_PACKAGE:-0}" == "1" ]]; then
+  yatta_ensure_package_installed "ufw" || return 1
+else
+  yatta_log_error "未安装 ufw，且未确认自动安装，已停止。"
+  return 1
+fi
+
+if [[ "${YATTA_UFW_SET_DENY_INCOMING:-0}" == "1" ]]; then
+  yatta_ufw_default_deny_incoming || return 1
+fi
+
+if [[ "${YATTA_UFW_SET_ALLOW_OUTGOING:-0}" == "1" ]]; then
+  yatta_ufw_default_allow_outgoing || return 1
+fi
+
+yatta_ufw_allow_port "$YATTA_UFW_SSH_PORT" "tcp" || return 1
+
+if [[ "${YATTA_UFW_ALLOW_WEB:-0}" == "1" ]]; then
+  yatta_ufw_allow_port "80" "tcp" || return 1
+  yatta_ufw_allow_port "443" "tcp" || return 1
+fi
+
+yatta_ufw_enable
 }
 
 yatta_register_generated_modules() {
   yatta_module_register 'system-check' 'System Check' 'yatta_module_system_check_prompt' 'yatta_module_system_check_apply'
   yatta_module_register 'hostname' 'Hostname' 'yatta_module_hostname_prompt' 'yatta_module_hostname_apply'
-  yatta_module_register 'user' 'User' 'yatta_module_user_prompt' 'yatta_module_user_apply'
   yatta_module_register 'timezone' 'Timezone' 'yatta_module_timezone_prompt' 'yatta_module_timezone_apply'
+  yatta_module_register 'user' 'User' 'yatta_module_user_prompt' 'yatta_module_user_apply'
   yatta_module_register 'packages' 'Packages' 'yatta_module_packages_prompt' 'yatta_module_packages_apply'
   yatta_module_register 'ufw' 'UFW' 'yatta_module_ufw_prompt' 'yatta_module_ufw_apply'
 }

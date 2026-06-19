@@ -2,9 +2,9 @@
 ![yatta](https://socialify.git.ci/CharOvO/yatta/image?custom_language=Go&description=1&font=JetBrains+Mono&forks=1&issues=1&language=1&name=1&owner=1&pattern=Plus&pulls=1&stargazers=1&theme=Light)
 Yatta 是一个面向 Ubuntu 服务器的初始化工具。它的目标是把一台新的 Ubuntu 服务器配置成可日常使用的基础状态，同时把实现过程拆成清晰、可学习、可复盘的小阶段。
 
-项目当前已完成 **Phase 2：Bash runtime 与 TUI 基础能力**。仓库已经具备 Go 构建器、模块校验、单文件脚本生成、零依赖 Bash runtime、基础 TUI、入口硬检查、执行计划展示和 `system-check` 环境摘要。
+项目当前已完成 **Phase 3：默认模块实现**。仓库已经具备 Go 构建器、模块校验、单文件脚本生成、零依赖 Bash runtime、基础 TUI、入口硬检查、执行计划展示、`system-check` 环境摘要，以及 hostname、user、timezone、packages、ufw 的默认模块逻辑。
 
-下一步是 **Phase 3：默认模块实现**，会补齐 hostname、user、timezone、packages、ufw 的真实交互和系统修改逻辑。
+下一步是 **Phase 4：集成验收与发布准备**，重点验证生成脚本在 Docker Ubuntu、VM/VPS 和真实 SSH/UFW 场景中的行为。
 
 ## 项目目标
 
@@ -17,7 +17,7 @@ Yatta v1 会包含两个交付层：
 
 ## 当前状态
 
-当前仓库已完成 Phase 0、Phase 1 和 Phase 2：
+当前仓库已完成 Phase 0、Phase 1、Phase 2 和 Phase 3：
 
 - 已建立 Go module，module path 为 `github.com/CharOvO/yatta`。
 - 已建立 v1 目标目录树。
@@ -28,11 +28,13 @@ Yatta v1 会包含两个交付层：
 - 已实现入口硬检查：Bash、root、Ubuntu、apt、systemd。
 - 已实现零依赖 TUI、日志、执行计划、确认执行和 dry-run 开发验收能力。
 - 已实现 `system-check` 环境摘要表格。
+- 已实现 `hostname`、`user`、`timezone`、`packages`、`ufw` 的真实交互、计划登记和 apply 阶段系统修改逻辑。
+- `ufw` 模块会先确认 SSH 放行端口，启用时提示固定默认策略，并单独询问是否开放 HTTP/HTTPS 常用端口 80/443。
+- 已整理模块 `order` 分段，`list-modules` 会显示执行顺序。
 - 已生成 `dist/yatta.sh`。
 
 尚未实现：
 
-- `hostname`、`user`、`timezone`、`packages`、`ufw` 的真实系统修改逻辑。
 - Docker、VM/VPS 集成验收。
 
 ## 目录说明
@@ -91,4 +93,4 @@ YATTA_TEST_MODE=1 YATTA_DRY_RUN=1 bash dist/yatta.sh
 
 ## 后续方向
 
-下一步应进入 Phase 3，实现默认模块的真实服务器初始化逻辑，并保持 prompt 阶段只登记计划、apply 阶段才修改系统的边界。
+下一步应进入 Phase 4，在 Docker Ubuntu 和真实 VM/VPS 中验证完整流程，尤其是 UFW、systemd 和 SSH 防锁门行为。

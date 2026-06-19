@@ -1,8 +1,8 @@
 id: packages
 name: Packages
-description: Install base packages placeholder
+description: Install base packages
 default_enabled: true
-order: 50
+order: 210
 requires: []
 conflicts: []
 supports:

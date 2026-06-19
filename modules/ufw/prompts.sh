@@ -1,2 +1,58 @@
-# Phase 2 只登记占位计划，真实防火墙询问留到 Phase 3。
-yatta_plan_add "ufw" "info" "Phase 3 将确认 SSH 放行策略和 Web 端口选项。"
+# UFW 是收尾模块，必须先确认并登记 SSH 放行策略，再允许启用防火墙。
+YATTA_UFW_ENABLE="0"
+YATTA_UFW_SSH_PORT="$(yatta_detect_ssh_port)"
+YATTA_UFW_INSTALL_PACKAGE="0"
+YATTA_UFW_SET_DENY_INCOMING="0"
+YATTA_UFW_SET_ALLOW_OUTGOING="0"
+YATTA_UFW_ALLOW_WEB="0"
+
+yatta_log_info "启用 UFW 时将自动执行：ufw default deny incoming；ufw default allow outgoing。启用前仍会先放行 SSH。"
+
+if ! yatta_valid_port "$YATTA_UFW_SSH_PORT"; then
+  yatta_log_warn "检测到的 SSH 端口无效，将默认使用 22，请确认。"
+  YATTA_UFW_SSH_PORT="22"
+fi
+
+while true; do
+  YATTA_UFW_SSH_PORT="$(yatta_ui_input "确认需要放行的 SSH 端口" "$YATTA_UFW_SSH_PORT")"
+  if yatta_valid_port "$YATTA_UFW_SSH_PORT"; then
+    break
+  fi
+  yatta_log_warn "端口必须是 1 到 65535 之间的数字。"
+done
+
+if yatta_ui_confirm "是否启用 UFW 防火墙？" "y"; then
+  YATTA_UFW_ENABLE="1"
+  YATTA_UFW_SET_DENY_INCOMING="1"
+  YATTA_UFW_SET_ALLOW_OUTGOING="1"
+  if yatta_package_installed "ufw"; then
+    yatta_plan_add "ufw" "ok" "ufw 软件包已安装。"
+  elif yatta_ui_confirm "未检测到 ufw 软件包，是否自动安装？" "y"; then
+    YATTA_UFW_INSTALL_PACKAGE="1"
+  else
+    yatta_log_warn "未安装 ufw 且选择不自动安装，本次将跳过 UFW 配置。"
+    YATTA_UFW_ENABLE="0"
+  fi
+fi
+
+if [[ "$YATTA_UFW_ENABLE" == "1" ]]; then
+  if yatta_ui_confirm "是否开放 HTTP/HTTPS 端口 80/443？" "n"; then
+    YATTA_UFW_ALLOW_WEB="1"
+  fi
+fi
+
+if [[ "$YATTA_UFW_ENABLE" != "1" ]]; then
+  yatta_plan_add "ufw" "warn" "跳过 UFW 配置。"
+else
+  yatta_plan_add "ufw" "info" "确认 SSH 放行端口：${YATTA_UFW_SSH_PORT}/tcp"
+  if [[ "$YATTA_UFW_INSTALL_PACKAGE" == "1" ]]; then
+    yatta_plan_add "ufw" "info" "将安装 ufw 软件包。"
+  fi
+  yatta_plan_add "ufw" "info" "执行固定默认策略：ufw default deny incoming"
+  yatta_plan_add "ufw" "info" "执行固定默认策略：ufw default allow outgoing"
+  yatta_plan_add "ufw" "info" "启用 UFW 前放行 SSH：${YATTA_UFW_SSH_PORT}/tcp"
+  if [[ "$YATTA_UFW_ALLOW_WEB" == "1" ]]; then
+    yatta_plan_add "ufw" "info" "开放 HTTP/HTTPS：80/tcp、443/tcp"
+  fi
+  yatta_plan_add "ufw" "warn" "启用 UFW。请确认当前 SSH 连接端口已放行。"
+fi

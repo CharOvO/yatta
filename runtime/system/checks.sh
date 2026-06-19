@@ -68,6 +68,137 @@ yatta_network_status() {
   return 1
 }
 
+yatta_current_hostname() {
+  if yatta_test_mode; then
+    printf '%s\n' "${YATTA_TEST_HOSTNAME:-yatta-test-host}"
+    return 0
+  fi
+  hostname
+}
+
+yatta_valid_hostname() {
+  local hostname="$1"
+  local label
+  local labels
+  [[ -n "$hostname" && "${#hostname}" -le 253 ]] || return 1
+  [[ "$hostname" != .* && "$hostname" != *. && "$hostname" != *..* ]] || return 1
+  IFS='.' read -r -a labels <<<"$hostname"
+  for label in "${labels[@]}"; do
+    [[ -n "$label" && "${#label}" -le 63 ]] || return 1
+    [[ "$label" =~ ^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?$ ]] || return 1
+  done
+}
+
+yatta_current_timezone() {
+  if yatta_test_mode; then
+    printf '%s\n' "${YATTA_TEST_TIMEZONE:-UTC}"
+    return 0
+  fi
+  if yatta_command_exists timedatectl; then
+    timedatectl show -p Timezone --value 2>/dev/null && return 0
+  fi
+  if [[ -r /etc/timezone ]]; then
+    head -n 1 /etc/timezone
+    return 0
+  fi
+  printf '%s\n' "未知"
+}
+
+yatta_timezone_available() {
+  local timezone="$1"
+  if [[ -z "$timezone" || "$timezone" == /* || "$timezone" == *..* ]]; then
+    return 1
+  fi
+  if yatta_test_mode; then
+    [[ "${YATTA_TEST_TIMEZONE_STATUS:-ok}" == "ok" ]]
+    return $?
+  fi
+  if [[ -f "/usr/share/zoneinfo/${timezone}" ]]; then
+    return 0
+  fi
+  yatta_command_exists timedatectl && timedatectl list-timezones 2>/dev/null | grep -Fx -- "$timezone" >/dev/null
+}
+
+yatta_user_exists() {
+  local username="$1"
+  if yatta_test_mode; then
+    [[ " ${YATTA_TEST_EXISTING_USERS:-root} " == *" ${username} "* ]]
+    return $?
+  fi
+  getent passwd "$username" >/dev/null 2>&1
+}
+
+yatta_user_in_group() {
+  local username="$1"
+  local group="$2"
+  if yatta_test_mode; then
+    [[ "$group" == "sudo" && " ${YATTA_TEST_SUDO_USERS:-root} " == *" ${username} "* ]]
+    return $?
+  fi
+  id -nG "$username" 2>/dev/null | tr ' ' '\n' | grep -Fx -- "$group" >/dev/null
+}
+
+yatta_package_installed() {
+  local package="$1"
+  if yatta_test_mode; then
+    [[ " ${YATTA_TEST_INSTALLED_PACKAGES:-} " == *" ${package} "* ]]
+    return $?
+  fi
+  dpkg-query -W -f='${Status}' "$package" 2>/dev/null | grep -Fx "install ok installed" >/dev/null
+}
+
+yatta_missing_packages() {
+  local package
+  for package in "$@"; do
+    if ! yatta_package_installed "$package"; then
+      printf '%s\n' "$package"
+    fi
+  done
+}
+
+yatta_valid_port() {
+  local port="$1"
+  [[ "$port" =~ ^[0-9]+$ ]] && ((port >= 1 && port <= 65535))
+}
+
+yatta_detect_ssh_port() {
+  local files=("/etc/ssh/sshd_config")
+  local conf
+  local detected
+  if yatta_test_mode; then
+    printf '%s\n' "${YATTA_TEST_SSH_PORT:-22}"
+    return 0
+  fi
+  if yatta_command_exists sshd; then
+    detected="$(sshd -T 2>/dev/null | awk '$1 == "port" && $2 ~ /^[0-9]+$/ { print $2; exit }')"
+    if [[ -n "$detected" ]]; then
+      printf '%s\n' "$detected"
+      return 0
+    fi
+  fi
+  if [[ -d /etc/ssh/sshd_config.d ]]; then
+    for conf in /etc/ssh/sshd_config.d/*.conf; do
+      [[ -e "$conf" ]] && files+=("$conf")
+    done
+  fi
+  awk '
+    {
+      sub(/[[:space:]]*#.*/, "")
+      if (tolower($1) == "port" && $2 ~ /^[0-9]+$/) {
+        print $2
+        exit
+      }
+    }
+  ' "${files[@]}" 2>/dev/null | {
+    IFS= read -r detected || detected=""
+    if [[ -n "$detected" ]]; then
+      printf '%s\n' "$detected"
+    else
+      printf '%s\n' "22"
+    fi
+  }
+}
+
 yatta_preflight() {
   if [[ -z "${BASH_VERSION:-}" ]]; then
     printf '%s\n' "Yatta 必须使用 Bash 运行，请执行：sudo bash yatta.sh" >&2
