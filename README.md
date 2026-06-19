@@ -1,72 +1,33 @@
 # Yatta
+
 ![yatta](https://socialify.git.ci/CharOvO/yatta/image?custom_language=Go&description=1&font=JetBrains+Mono&forks=1&issues=1&language=1&name=1&owner=1&pattern=Plus&pulls=1&stargazers=1&theme=Light)
-Yatta 是一个面向 Ubuntu 服务器的初始化工具。它的目标是把一台新的 Ubuntu 服务器配置成可日常使用的基础状态，同时把实现过程拆成清晰、可学习、可复盘的小阶段。
 
-项目当前已完成 **Phase 3：默认模块实现**。仓库已经具备 Go 构建器、模块校验、单文件脚本生成、零依赖 Bash runtime、基础 TUI、入口硬检查、执行计划展示、`system-check` 环境摘要，以及 hostname、user、timezone、packages、ufw 的默认模块逻辑。
+Yatta 是一个面向 Ubuntu 服务器的初始化工具。它把一台新的 Ubuntu 服务器整理成适合日常使用的基础状态，并在真正修改系统前展示完整执行计划。
 
-下一步是 **Phase 4：集成验收与发布准备**，重点验证生成脚本在 Docker Ubuntu、VM/VPS 和真实 SSH/UFW 场景中的行为。
+当前项目已完成 v1 默认流程，并已在真实 Ubuntu 服务器上完成一次可用性验收。
 
-## 项目目标
+## 普通用户
 
-Yatta v1 会包含两个交付层：
-
-- 开发层：使用 Go 构建器维护源码、模块、校验逻辑、locale 和脚本生成流程。
-- 用户层：交付一个零外部依赖的 Bash 单文件脚本，默认产物为 `dist/yatta.sh`。
-
-普通用户未来只需要运行生成后的 `dist/yatta.sh`。高级用户可以调整模块、runtime 或 locale 后重新构建，生成定制脚本。
-
-## 当前状态
-
-当前仓库已完成 Phase 0、Phase 1、Phase 2 和 Phase 3：
-
-- 已建立 Go module，module path 为 `github.com/CharOvO/yatta`。
-- 已建立 v1 目标目录树。
-- 已实现 `yatta validate`。
-- 已实现 `yatta list-modules`。
-- 已实现 `yatta build`。
-- 已实现多文件 Bash runtime：`core`、`ui`、`system`、`adapter`。
-- 已实现入口硬检查：Bash、root、Ubuntu、apt、systemd。
-- 已实现零依赖 TUI、日志、执行计划、确认执行和 dry-run 开发验收能力。
-- 已实现 `system-check` 环境摘要表格。
-- 已实现 `hostname`、`user`、`timezone`、`packages`、`ufw` 的真实交互、计划登记和 apply 阶段系统修改逻辑。
-- `ufw` 模块会先确认 SSH 放行端口，启用时提示固定默认策略，并单独询问是否开放 HTTP/HTTPS 常用端口 80/443。
-- 已整理模块 `order` 分段，`list-modules` 会显示执行顺序。
-- 已生成 `dist/yatta.sh`。
-
-尚未实现：
-
-- Docker、VM/VPS 集成验收。
-
-## 目录说明
+如果你只想初始化一台 Ubuntu 服务器，通常只需要运行生成好的脚本：
 
 ```text
-yatta/
-├── cmd/yatta/          # Go CLI 入口，未来只负责解析命令并调用 internal/*
-├── internal/           # Go 构建器、模块读取、locale 和校验逻辑
-├── runtime/            # 会被拼接进最终脚本的 Bash 标准库
-├── modules/            # 服务器初始化模块
-├── locales/            # 脚本文案源文件
-├── dist/               # yatta build 生成产物目录
-├── docs/plan/          # 功能级、模块级、实现级计划文档
-├── DEVELOPMENT.md      # 项目级开发总手册
-└── go.mod              # Go module 定义
+sudo bash dist/yatta.sh
 ```
 
-`dist/yatta.sh` 是由 `yatta build` 生成的产物，不应手写修改。
+脚本会依次检查环境、收集配置、展示执行计划，并在你确认后才开始修改系统。v1 默认包含：
 
-## 开发流程
+- 环境检查：Ubuntu、root、Bash、apt、systemd、基础网络状态。
+- 主机名：保留当前 hostname 或设置新 hostname。
+- 时区：默认建议 `Asia/Shanghai`，也可以自定义或跳过。
+- 用户：创建或确认一个非 root sudo 用户，密码交给系统 `adduser` 处理。
+- 基础软件包：检测缺失包后询问是否安装。
+- UFW：确认 SSH 端口，启用前提示固定默认策略，可选开放 HTTP/HTTPS 端口 `80/443`。
 
-Yatta 的开发遵守轻量但留痕的流程：
+更多使用说明见 [用户使用指南](docs/user-guide.md) 和 [常见问题](docs/faq.md)。
 
-1. 先记录需求或想法。
-2. 在 `docs/plan/<feature>.md` 写计划。
-3. 根据计划实现。
-4. 按影响范围执行验证。
-5. 回到同一份计划文档更新验收结果、遗留问题和复盘。
+## 高级用户与开发者
 
-任何功能级、模块级、实现级工作都应该先有计划文档，再进入实现。当前仓库会忽略 `docs/plan/*.md`，计划文档可作为本地草稿与复盘记录保存。
-
-## 常用命令
+如果你想调整默认模块、修改文案、重新构建脚本或新增模块，可以使用 Go 构建器：
 
 ```text
 go run ./cmd/yatta validate
@@ -74,23 +35,27 @@ go run ./cmd/yatta list-modules
 go run ./cmd/yatta build
 ```
 
-构建后可用 Bash 做语法检查：
+`dist/yatta.sh` 是构建产物，不应手写修改。源码入口包括：
 
-```text
-bash -n dist/yatta.sh
-```
+- `modules/`：服务器初始化模块，每个模块包含 `module.yaml`、`prompts.sh`、`apply.sh`。
+- `runtime/`：会被拼接进最终脚本的 Bash 标准库。
+- `internal/`：Go 构建器、模块读取、locale 和校验逻辑。
+- `locales/`：脚本文案源文件。
 
-在开发验收中，可以使用隐藏环境变量走非破坏性路径：
+模块开发规则见 [模块开发手册](docs/module-development.md)。验收流程见 [Smoke Test 与验收说明](docs/smoke-test.md)。项目级开发约束见 [DEVELOPMENT.md](DEVELOPMENT.md)。
 
-```text
-YATTA_TEST_MODE=1 YATTA_DRY_RUN=1 bash dist/yatta.sh
-```
+## 文档导航
 
-## 重要文档
+- [用户使用指南](docs/user-guide.md)：面向普通用户的运行教程和模块说明。
+- [常见问题](docs/faq.md)：root、Ubuntu、SSH、UFW、用户创建等常见问题。
+- [模块开发手册](docs/module-development.md)：面向高级用户和开发者的模块结构、order 分段、prompt/apply 边界。
+- [Smoke Test 与验收说明](docs/smoke-test.md)：发布前的基础验证和真实服务器验收记录。
+- [DEVELOPMENT.md](DEVELOPMENT.md)：项目阶段、架构、规范和开发流程总手册。
 
-- `DEVELOPMENT.md`：项目定位、阶段划分、目录职责、模块规范、验证规则和发布约束。
-- `docs/plan/*.md`：本地功能计划、验收记录和复盘草稿。
+## 当前状态
 
-## 后续方向
-
-下一步应进入 Phase 4，在 Docker Ubuntu 和真实 VM/VPS 中验证完整流程，尤其是 UFW、systemd 和 SSH 防锁门行为。
+- 已完成 Phase 0：项目骨架与开发文档。
+- 已完成 Phase 1：Go 构建器与模块校验。
+- 已完成 Phase 2：Bash runtime 与 TUI 基础能力。
+- 已完成 Phase 3：默认模块实现。
+- Phase 4 正在收尾：真实 Ubuntu 服务器验收已通过，后续可继续补充 Docker Ubuntu 验收记录。
