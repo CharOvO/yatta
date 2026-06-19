@@ -1,0 +1,9 @@
+id: user
+name: User
+description: Create a non-root sudo user placeholder
+default_enabled: true
+order: 30
+requires: []
+conflicts: []
+supports:
+  distros: [ubuntu]

@@ -1,0 +1,9 @@
+id: alpha
+name: Alpha
+description: Alpha fixture module
+default_enabled: true
+order: 20
+requires: []
+conflicts: []
+supports:
+  distros: [ubuntu]

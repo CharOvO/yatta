@@ -1,0 +1,9 @@
+id: beta
+name: Beta
+description: Beta fixture module
+default_enabled: false
+order: 20
+requires: []
+conflicts: []
+supports:
+  distros: [ubuntu]

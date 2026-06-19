@@ -1,0 +1,9 @@
+id: timezone
+name: Timezone
+description: Configure system timezone placeholder
+default_enabled: true
+order: 40
+requires: []
+conflicts: []
+supports:
+  distros: [ubuntu]

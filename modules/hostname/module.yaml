@@ -1,0 +1,9 @@
+id: hostname
+name: Hostname
+description: Configure system hostname placeholder
+default_enabled: true
+order: 20
+requires: []
+conflicts: []
+supports:
+  distros: [ubuntu]

@@ -1,1 +1,1 @@
-# This file keeps the directory in Git until real files are added.
+# 此文件用于在真实文件加入前让 Git 保留该目录。

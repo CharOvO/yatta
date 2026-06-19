@@ -2,7 +2,7 @@
 ![yatta](https://socialify.git.ci/CharOvO/yatta/image?custom_language=Go&description=1&font=JetBrains+Mono&forks=1&issues=1&language=1&name=1&owner=1&pattern=Plus&pulls=1&stargazers=1&theme=Light)
 Yatta 是一个面向 Ubuntu 服务器的初始化工具。它的目标是把一台新的 Ubuntu 服务器配置成可日常使用的基础状态，同时把实现过程拆成清晰、可学习、可复盘的小阶段。
 
-项目当前处于 **Phase 0：项目骨架与开发文档**。这一阶段只建立项目骨架、开发规则和计划文档，不实现实际的 Go 构建器、Bash runtime 或默认模块逻辑。
+项目当前已进入 **Phase 1：Go 构建器与模块校验**。这一阶段建立最小可用的 Go CLI、模块校验、模块列表和脚本生成流程；Bash runtime 和默认模块仍然是占位实现，真实系统配置逻辑会在后续阶段补齐。
 
 ## 项目目标
 
@@ -15,21 +15,22 @@ Yatta v1 会包含两个交付层：
 
 ## 当前状态
 
-当前仓库只完成 Phase 0 的项目骨架：
+当前仓库已完成 Phase 0 的项目骨架，并具备 Phase 1 的最小构建器能力：
 
 - 已建立 Go module，module path 为 `github.com/CharOvO/yatta`。
 - 已建立 v1 目标目录树。
 - 已建立 `docs/plan/` 计划目录。
 - 已添加第一份阶段计划 `docs/plan/project-skeleton.md`。
+- 已实现 `yatta validate`。
+- 已实现 `yatta list-modules`。
+- 已实现 `yatta build`。
+- 已创建最小 runtime、locale 和默认模块占位源文件。
 
 尚未实现：
 
-- `yatta build`
-- `yatta validate`
-- `yatta list-modules`
-- Bash runtime
-- 默认模块
-- `dist/yatta.sh`
+- 完整 Bash runtime 交互体验。
+- 默认模块的真实系统修改逻辑。
+- Docker、VM/VPS 集成验收。
 
 ## 目录说明
 
@@ -67,4 +68,4 @@ Yatta 的开发遵守轻量但留痕的流程：
 
 ## 后续方向
 
-Phase 0 完成后，下一步应进入 Phase 1，优先规划并实现 Go CLI 最小入口和手写子命令分发，为后续 `yatta build`、`yatta validate` 和 `yatta list-modules` 打基础。
+下一步应进入 Phase 2，扩展 Bash runtime、零依赖 TUI、系统探测、执行计划展示和入口硬检查。

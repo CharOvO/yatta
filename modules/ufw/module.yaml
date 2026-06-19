@@ -1,0 +1,9 @@
+id: ufw
+name: UFW
+description: Configure firewall placeholder
+default_enabled: true
+order: 60
+requires: []
+conflicts: []
+supports:
+  distros: [ubuntu]
