@@ -20,12 +20,13 @@ sudo bash dist/yatta.sh
 bash dist/yatta.sh --version
 ```
 
-脚本会依次检查环境、收集配置、展示执行计划，并在你确认后才开始修改系统。v1 默认包含：
+脚本会依次检查环境、让你选择本次启用模块、收集配置、展示执行计划，并在你确认后才开始修改系统。当前内置模块包含：
 
 - 环境检查：Ubuntu、root、Bash、apt、systemd、基础网络状态。
 - 主机名：保留当前 hostname 或设置新 hostname。
 - 时区：默认建议 `Asia/Shanghai`，也可以自定义或跳过。
-- 用户：创建或确认一个非 root sudo 用户，密码交给系统 `adduser` 处理。
+- swap：未检测到 swap 时，可选创建保守大小的 `/swapfile`。
+- 用户：创建或确认一个非 root sudo 用户，可选 sudo 免密、SSH 公钥导入和多余普通用户清理；密码交给系统 `adduser` 处理。
 - 基础软件包：检测缺失包后询问是否安装。
 - UFW：确认 SSH 端口，启用前提示固定默认策略，可选开放 HTTP/HTTPS 端口 `80/443`。
 
@@ -44,6 +45,7 @@ go run ./cmd/yatta --version
 
 `dist/yatta.sh` 是构建产物，不应手写修改。源码入口包括：
 
+- `yatta.build.yaml`：v2 构建 profile，决定哪些模块编译进生成脚本。
 - `modules/`：服务器初始化模块，每个模块包含 `module.yaml`、`prompts.sh`、`apply.sh`。
 - `runtime/`：会被拼接进最终脚本的 Bash 标准库。
 - `internal/`：Go 构建器、模块读取、locale 和校验逻辑。
@@ -68,3 +70,4 @@ go run ./cmd/yatta --version
 - 已完成 Phase 2：Bash runtime 与 TUI 基础能力。
 - 已完成 Phase 3：默认模块实现。
 - Phase 4 正在收尾：真实 Ubuntu 服务器验收已通过，后续可继续补充 Docker Ubuntu 验收记录。
+- v2 框架迭代已启动：构建 profile 与运行时模块选择框架已落地，后续按模块逐个重写和验收。

@@ -25,6 +25,9 @@ id: hostname
 name: Hostname
 description: Configure system hostname
 default_enabled: true
+runtime_default: true
+risk: low
+group: system-basics
 stage: system
 order: 110
 requires: []
@@ -40,7 +43,11 @@ supports:
 - `id` 使用短横线小写命名，且必须与目录名一致。
 - `name` 是人类可读名称。
 - `description` 描述模块效果。
-- `default_enabled` 决定默认构建是否包含模块。
+- `default_enabled` 是 v1 遗留兼容字段，v2 不再用它决定默认构建是否包含模块。
+- `runtime_default` 决定模块编译进脚本后，运行时是否默认勾选。
+- `risk` 是风险等级，只允许 `low`、`medium`、`high`；高风险模块运行时默认不启用。
+- `group` 用于运行时模块选择界面分组。
+- `locked` 是可选字段，用于 `system-check` 这类不可取消模块。
 - `stage` 决定模块所属执行阶段，新模块优先使用。
 - `order` 是兼容字段，可用于同阶段内辅助排序。
 - `requires` 声明硬依赖模块 ID。
@@ -76,7 +83,15 @@ supports:
 
 `prompts.sh` 禁止修改系统。
 
-`pre_apply.sh`、`apply.sh`、`post_apply.sh` 只能在用户确认完整执行计划后运行。系统修改应优先调用 runtime 或 adapter 函数，例如：
+`pre_apply.sh`、`apply.sh`、`post_apply.sh` 只能在用户确认完整执行计划后运行。系统修改应先复用已有 runtime 或 adapter；如果该操作只属于当前模块、没有明显复用价值，也可以在模块内直接调用系统命令，并用 `yatta_run_command` 保持 dry-run 行为一致。
+
+适合放进 runtime 或 adapter 的内容：
+
+- 多个模块都会复用的探测、校验或系统修改。
+- 平台差异明显，后续可能需要发行版适配的命令。
+- 需要统一保护的高风险公共边界，例如防火墙、用户、包管理、服务重载。
+
+不必为了单个模块的一次性实现修改框架。已有的常用函数示例：
 
 - `yatta_set_hostname`
 - `yatta_set_timezone`
@@ -85,6 +100,8 @@ supports:
 - `yatta_ensure_package_installed`
 - `yatta_ufw_allow_port`
 - `yatta_add_sudo_user`
+- `yatta_ensure_sudo_nopasswd`
+- `yatta_ensure_authorized_keys`
 
 ## 端口计划
 
@@ -97,6 +114,18 @@ yatta_port_plan_add "module-id" "tcp" "8080" "业务说明"
 UFW 模块会统一展示、确认并放行端口计划。其他模块不应直接散落 UFW 命令。
 
 ## 构建与校验
+
+v2 起，构建时包含哪些模块由根目录 `yatta.build.yaml` 决定。默认配置使用 `basic` profile，并通过 `include: ["*"]` 编译全部内置模块：
+
+```yaml
+default_profile: basic
+profiles:
+  basic:
+    include: ["*"]
+    exclude: []
+```
+
+`exclude` 可以从 profile 中移除指定模块。`yatta validate` 会检查 profile 引用的模块是否存在、是否重复、是否冲突，以及是否破坏 `requires`、`before`、`after` 关系。
 
 常用命令：
 
