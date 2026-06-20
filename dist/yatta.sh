@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 # 此文件由 yatta build 生成，请勿手写修改。
+# Yatta version: 1.0.0
+YATTA_VERSION='1.0.0'
 
 # ===== runtime/core/prelude.sh =====
 # 这里保存 runtime 的共享状态和小型工具函数。它必须最先被拼接，
@@ -8,17 +10,51 @@
 YATTA_MODULE_IDS=()
 YATTA_MODULE_NAMES=()
 YATTA_MODULE_PROMPT_FNS=()
+YATTA_MODULE_PRE_APPLY_FNS=()
 YATTA_MODULE_APPLY_FNS=()
+YATTA_MODULE_POST_APPLY_FNS=()
 
 YATTA_PLAN_MODULES=()
 YATTA_PLAN_LEVELS=()
 YATTA_PLAN_MESSAGES=()
 
+YATTA_PORT_PLAN_MODULES=()
+YATTA_PORT_PLAN_PROTOCOLS=()
+YATTA_PORT_PLAN_PORTS=()
+YATTA_PORT_PLAN_PURPOSES=()
+
 yatta_module_register() {
   YATTA_MODULE_IDS+=("$1")
   YATTA_MODULE_NAMES+=("$2")
   YATTA_MODULE_PROMPT_FNS+=("$3")
-  YATTA_MODULE_APPLY_FNS+=("$4")
+  YATTA_MODULE_PRE_APPLY_FNS+=("$4")
+  YATTA_MODULE_APPLY_FNS+=("$5")
+  YATTA_MODULE_POST_APPLY_FNS+=("$6")
+}
+
+yatta_version() {
+  printf 'Yatta %s\n' "${YATTA_VERSION:-dev}"
+}
+
+yatta_handle_runtime_args() {
+  if [[ "$#" -eq 0 ]]; then
+    return 1
+  fi
+  if [[ "$#" -gt 1 ]]; then
+    printf 'Yatta 只接受一个参数：--version。\n' >&2
+    return 2
+  fi
+  case "$1" in
+    -v | --version | version)
+      yatta_version
+      return 0
+      ;;
+    *)
+      printf '未知参数：%s\n' "$1" >&2
+      printf '可用参数：--version\n' >&2
+      return 2
+      ;;
+  esac
 }
 
 yatta_plan_add() {
@@ -49,6 +85,44 @@ yatta_plan_show() {
   done
 }
 
+yatta_port_plan_add() {
+  local module="$1"
+  local protocol="$2"
+  local port="$3"
+  local purpose="$4"
+  protocol="${protocol,,}"
+  if [[ "$protocol" != "tcp" && "$protocol" != "udp" ]]; then
+    yatta_log_warn "忽略不支持的端口协议：${protocol}"
+    return 1
+  fi
+  if ! yatta_valid_port "$port"; then
+    yatta_log_warn "忽略无效端口：${port}"
+    return 1
+  fi
+  YATTA_PORT_PLAN_MODULES+=("$module")
+  YATTA_PORT_PLAN_PROTOCOLS+=("$protocol")
+  YATTA_PORT_PLAN_PORTS+=("$port")
+  YATTA_PORT_PLAN_PURPOSES+=("$purpose")
+}
+
+yatta_port_plan_show() {
+  local index total
+  total="${#YATTA_PORT_PLAN_PORTS[@]}"
+  if [[ "$total" -eq 0 ]]; then
+    yatta_log_info "当前没有登记额外端口放行需求。"
+    return 0
+  fi
+  printf '已登记以下端口放行需求：\n' >&2
+  printf '  %-12s %-8s %-8s %s\n' "来源模块" "协议" "端口" "用途" >&2
+  for index in "${!YATTA_PORT_PLAN_PORTS[@]}"; do
+    printf '  %-12s %-8s %-8s %s\n' \
+      "${YATTA_PORT_PLAN_MODULES[$index]}" \
+      "${YATTA_PORT_PLAN_PROTOCOLS[$index]}" \
+      "${YATTA_PORT_PLAN_PORTS[$index]}" \
+      "${YATTA_PORT_PLAN_PURPOSES[$index]}" >&2
+  done
+}
+
 yatta_call_function() {
   local fn="$1"
   if ! declare -F "$fn" >/dev/null 2>&1; then
@@ -59,7 +133,7 @@ yatta_call_function() {
 }
 
 yatta_has_tty() {
-  [[ -t 0 && -t 1 ]]
+  [[ -r /dev/tty && -w /dev/tty ]]
 }
 
 yatta_test_mode() {
@@ -90,27 +164,44 @@ yatta_run_prompts() {
 }
 
 yatta_run_applies() {
+  local phase="$1"
+  local phase_name="$2"
   local index id name apply_fn
+  yatta_ui_section "$phase_name"
   for index in "${!YATTA_MODULE_IDS[@]}"; do
     id="${YATTA_MODULE_IDS[$index]}"
     name="${YATTA_MODULE_NAMES[$index]}"
-    apply_fn="${YATTA_MODULE_APPLY_FNS[$index]}"
-    if [[ "$id" == "user" ]]; then
+    case "$phase" in
+      pre) apply_fn="${YATTA_MODULE_PRE_APPLY_FNS[$index]}" ;;
+      post) apply_fn="${YATTA_MODULE_POST_APPLY_FNS[$index]}" ;;
+      *) apply_fn="${YATTA_MODULE_APPLY_FNS[$index]}" ;;
+    esac
+    if [[ "$phase" == "main" && "$id" == "user" ]]; then
       yatta_log_info "执行 ${name}"
       yatta_call_function "$apply_fn"
     else
-      yatta_ui_spinner "执行 ${name}" yatta_call_function "$apply_fn"
+      yatta_ui_spinner "执行 ${phase_name}：${name}" yatta_call_function "$apply_fn"
     fi
     if [[ "$?" -ne 0 ]]; then
-      yatta_log_error "模块 ${id} 执行失败，后续模块已停止。"
+      yatta_log_error "模块 ${id} 的 ${phase_name} 失败，后续任务已停止。"
       return 1
     fi
-    yatta_log_ok "模块 ${name} 已完成。"
+    yatta_log_ok "模块 ${name} 的 ${phase_name} 已完成。"
   done
 }
 
 yatta_main() {
   local apply_default="n"
+  local arg_status
+  yatta_handle_runtime_args "$@"
+  arg_status="$?"
+  if [[ "$arg_status" -eq 0 ]]; then
+    return 0
+  fi
+  if [[ "$arg_status" -ne 1 ]]; then
+    return 1
+  fi
+
   yatta_ui_init
   yatta_ui_brand
   yatta_preflight || return 1
@@ -134,9 +225,16 @@ yatta_main() {
     return 0
   fi
 
-  yatta_ui_section "开始执行"
-  if ! yatta_run_applies; then
+  if ! yatta_run_applies "pre" "前置执行"; then
+    yatta_log_error "Yatta 前置执行失败，请根据上方日志处理后重试。"
+    return 1
+  fi
+  if ! yatta_run_applies "main" "模块执行"; then
     yatta_log_error "Yatta 执行失败，请根据上方日志处理后重试。"
+    return 1
+  fi
+  if ! yatta_run_applies "post" "收尾执行"; then
+    yatta_log_error "Yatta 收尾执行失败，请根据上方日志处理后重试。"
     return 1
   fi
 
@@ -164,7 +262,7 @@ YATTA_SYMBOL_ARROW=">"
 YATTA_SPINNER_FRAMES=("-" "\\" "|" "/")
 
 yatta_ui_init() {
-  if [[ -t 1 && -z "${NO_COLOR:-}" ]]; then
+  if [[ -t 2 && -z "${NO_COLOR:-}" ]]; then
     YATTA_COLOR_RESET=$'\033[0m'
     YATTA_COLOR_DIM=$'\033[2m'
     YATTA_COLOR_BOLD=$'\033[1m'
@@ -186,11 +284,11 @@ yatta_ui_init() {
 
 yatta_ui_utf8_enabled() {
   local locale_value="${LC_ALL:-${LC_CTYPE:-${LANG:-}}}"
-  [[ -t 1 && "$locale_value" =~ (UTF-8|utf8|utf-8) ]]
+  yatta_has_tty && [[ "$locale_value" =~ (UTF-8|utf8|utf-8) ]]
 }
 
 yatta_ui_brand() {
-  printf '%s\n' "${YATTA_COLOR_BOLD}Yatta! server init${YATTA_COLOR_RESET}" >&2
+  printf '%s\n' "${YATTA_COLOR_BOLD}Yatta ${YATTA_VERSION:-dev}! server init${YATTA_COLOR_RESET}" >&2
   printf '%s\n' "${YATTA_COLOR_DIM}把新 Ubuntu 服务器整理到可日常使用的基础状态。${YATTA_COLOR_RESET}" >&2
   printf '%s\n' >&2
 }
@@ -658,6 +756,10 @@ yatta_apt_install() {
   yatta_run_command apt-get install -y "$@"
 }
 
+yatta_apt_upgrade() {
+  yatta_run_command apt-get upgrade -y
+}
+
 yatta_apt_install_missing() {
   local packages=("$@")
   if [[ "${#packages[@]}" -eq 0 ]]; then
@@ -753,6 +855,10 @@ while IFS=$'\t' read -r item status detail; do
 done < <(yatta_system_summary)
 }
 
+yatta_module_system_check_pre_apply() {
+  return 0
+}
+
 yatta_module_system_check_apply() {
 # apply 阶段只做执行前最终确认，复用 runtime/system 的硬检查边界。
 # 网络检查失败只提示风险，不阻断后续不依赖网络的模块。
@@ -762,6 +868,10 @@ if yatta_network_status; then
 else
   yatta_log_warn "暂未确认网络连通性，后续需要 apt 的模块可能失败。"
 fi
+}
+
+yatta_module_system_check_post_apply() {
+  return 0
 }
 
 yatta_module_hostname_prompt() {
@@ -793,6 +903,10 @@ else
 fi
 }
 
+yatta_module_hostname_pre_apply() {
+  return 0
+}
+
 yatta_module_hostname_apply() {
 # apply 阶段重新检查当前值，避免重复运行时执行不必要的 hostnamectl。
 if [[ "${YATTA_HOSTNAME_ACTION:-keep}" == "keep" ]]; then
@@ -812,6 +926,10 @@ if [[ "$current" == "$YATTA_HOSTNAME_TARGET" ]]; then
 fi
 
 yatta_set_hostname "$YATTA_HOSTNAME_TARGET"
+}
+
+yatta_module_hostname_post_apply() {
+  return 0
 }
 
 yatta_module_timezone_prompt() {
@@ -845,6 +963,10 @@ else
 fi
 }
 
+yatta_module_timezone_pre_apply() {
+  return 0
+}
+
 yatta_module_timezone_apply() {
 # apply 阶段重新检查当前时区，重复运行时尽量不做无意义修改。
 if [[ "${YATTA_TIMEZONE_ACTION:-skip}" == "skip" ]]; then
@@ -864,6 +986,10 @@ if [[ "$current" == "$YATTA_TIMEZONE_TARGET" ]]; then
 fi
 
 yatta_set_timezone "$YATTA_TIMEZONE_TARGET"
+}
+
+yatta_module_timezone_post_apply() {
+  return 0
 }
 
 yatta_module_user_prompt() {
@@ -901,6 +1027,10 @@ else
 fi
 }
 
+yatta_module_user_pre_apply() {
+  return 0
+}
+
 yatta_module_user_apply() {
 # apply 阶段才调用 adduser，让系统工具处理密码，脚本不保存明文密码。
 if [[ "${YATTA_USER_ACTION:-skip}" == "skip" ]]; then
@@ -921,11 +1051,17 @@ else
 fi
 }
 
+yatta_module_user_post_apply() {
+  return 0
+}
+
 yatta_module_packages_prompt() {
 # packages 模块只处理 v1 文档规定的基础包，扩展包留给后续模块。
 YATTA_BASE_PACKAGES=(curl wget git vim unzip ca-certificates gnupg lsb-release)
 YATTA_PACKAGES_MISSING=()
 YATTA_PACKAGES_INSTALL="0"
+YATTA_PACKAGES_APT_UPDATE="0"
+YATTA_PACKAGES_APT_UPGRADE="0"
 
 while IFS= read -r package; do
   [[ -n "$package" ]] && YATTA_PACKAGES_MISSING+=("$package")
@@ -935,10 +1071,30 @@ if [[ "${#YATTA_PACKAGES_MISSING[@]}" -eq 0 ]]; then
   yatta_plan_add "packages" "ok" "基础软件包已全部安装。"
 elif yatta_ui_confirm "检测到缺失基础软件包：${YATTA_PACKAGES_MISSING[*]}。是否安装？" "y"; then
   YATTA_PACKAGES_INSTALL="1"
+  YATTA_PACKAGES_APT_UPDATE="1"
   yatta_plan_add "packages" "info" "将安装基础软件包：${YATTA_PACKAGES_MISSING[*]}"
 else
   yatta_plan_add "packages" "warn" "跳过基础软件包安装，缺失：${YATTA_PACKAGES_MISSING[*]}"
 fi
+
+if yatta_ui_confirm "是否在脚本全部执行完成后运行 apt upgrade？这可能升级大量系统包。" "n"; then
+  YATTA_PACKAGES_APT_UPDATE="1"
+  YATTA_PACKAGES_APT_UPGRADE="1"
+  yatta_plan_add "packages" "warn" "将在所有模块完成后执行 apt upgrade 作为最后收尾任务。"
+else
+  yatta_plan_add "packages" "info" "跳过 apt upgrade 收尾任务。"
+fi
+}
+
+yatta_module_packages_pre_apply() {
+# packages 的前置阶段只负责刷新 apt 索引。这样后续需要安装软件包的模块
+# 可以复用较新的包索引，同时把风险更高的 apt upgrade 留到最终收尾阶段。
+if [[ "${YATTA_PACKAGES_APT_UPDATE:-0}" != "1" ]]; then
+  yatta_log_info "没有需要提前刷新的 apt 索引。"
+  return 0
+fi
+
+yatta_apt_update
 }
 
 yatta_module_packages_apply() {
@@ -958,8 +1114,19 @@ if [[ "${#fresh_missing[@]}" -eq 0 ]]; then
   return 0
 fi
 
-yatta_apt_update || return 1
 yatta_apt_install_missing "${fresh_missing[@]}"
+}
+
+yatta_module_packages_post_apply() {
+# apt upgrade 可能触发较大范围的软件包升级，所以只在用户明确确认后，
+# 作为全部模块完成后的最后收尾任务执行。
+if [[ "${YATTA_PACKAGES_APT_UPGRADE:-0}" != "1" ]]; then
+  yatta_log_info "已跳过 apt upgrade 收尾任务。"
+  return 0
+fi
+
+yatta_log_warn "即将执行 apt upgrade，这是本次脚本的最后收尾任务。"
+yatta_apt_upgrade
 }
 
 yatta_module_ufw_prompt() {
@@ -970,6 +1137,7 @@ YATTA_UFW_INSTALL_PACKAGE="0"
 YATTA_UFW_SET_DENY_INCOMING="0"
 YATTA_UFW_SET_ALLOW_OUTGOING="0"
 YATTA_UFW_ALLOW_WEB="0"
+YATTA_UFW_CONFIRMED_PORT_PLAN="0"
 
 yatta_log_info "启用 UFW 时将自动执行：ufw default deny incoming；ufw default allow outgoing。启用前仍会先放行 SSH。"
 
@@ -1003,6 +1171,15 @@ fi
 if [[ "$YATTA_UFW_ENABLE" == "1" ]]; then
   if yatta_ui_confirm "是否开放 HTTP/HTTPS 端口 80/443？" "n"; then
     YATTA_UFW_ALLOW_WEB="1"
+    yatta_port_plan_add "ufw" "tcp" "80" "HTTP"
+    yatta_port_plan_add "ufw" "tcp" "443" "HTTPS"
+  fi
+  yatta_port_plan_show
+  if yatta_ui_confirm "请再次确认：是否按以上端口计划配置 UFW？" "y"; then
+    YATTA_UFW_CONFIRMED_PORT_PLAN="1"
+  else
+    yatta_log_warn "未确认端口计划，本次将跳过 UFW 配置。"
+    YATTA_UFW_ENABLE="0"
   fi
 fi
 
@@ -1016,11 +1193,15 @@ else
   yatta_plan_add "ufw" "info" "执行固定默认策略：ufw default deny incoming"
   yatta_plan_add "ufw" "info" "执行固定默认策略：ufw default allow outgoing"
   yatta_plan_add "ufw" "info" "启用 UFW 前放行 SSH：${YATTA_UFW_SSH_PORT}/tcp"
-  if [[ "$YATTA_UFW_ALLOW_WEB" == "1" ]]; then
-    yatta_plan_add "ufw" "info" "开放 HTTP/HTTPS：80/tcp、443/tcp"
+  if [[ "${#YATTA_PORT_PLAN_PORTS[@]}" -gt 0 ]]; then
+    yatta_plan_add "ufw" "info" "按已确认端口计划放行 ${#YATTA_PORT_PLAN_PORTS[@]} 条规则。"
   fi
   yatta_plan_add "ufw" "warn" "启用 UFW。请确认当前 SSH 连接端口已放行。"
 fi
+}
+
+yatta_module_ufw_pre_apply() {
+  return 0
 }
 
 yatta_module_ufw_apply() {
@@ -1054,21 +1235,26 @@ fi
 
 yatta_ufw_allow_port "$YATTA_UFW_SSH_PORT" "tcp" || return 1
 
-if [[ "${YATTA_UFW_ALLOW_WEB:-0}" == "1" ]]; then
-  yatta_ufw_allow_port "80" "tcp" || return 1
-  yatta_ufw_allow_port "443" "tcp" || return 1
+if [[ "${YATTA_UFW_CONFIRMED_PORT_PLAN:-0}" == "1" ]]; then
+  for index in "${!YATTA_PORT_PLAN_PORTS[@]}"; do
+    yatta_ufw_allow_port "${YATTA_PORT_PLAN_PORTS[$index]}" "${YATTA_PORT_PLAN_PROTOCOLS[$index]}" || return 1
+  done
 fi
 
 yatta_ufw_enable
 }
 
+yatta_module_ufw_post_apply() {
+  return 0
+}
+
 yatta_register_generated_modules() {
-  yatta_module_register 'system-check' 'System Check' 'yatta_module_system_check_prompt' 'yatta_module_system_check_apply'
-  yatta_module_register 'hostname' 'Hostname' 'yatta_module_hostname_prompt' 'yatta_module_hostname_apply'
-  yatta_module_register 'timezone' 'Timezone' 'yatta_module_timezone_prompt' 'yatta_module_timezone_apply'
-  yatta_module_register 'user' 'User' 'yatta_module_user_prompt' 'yatta_module_user_apply'
-  yatta_module_register 'packages' 'Packages' 'yatta_module_packages_prompt' 'yatta_module_packages_apply'
-  yatta_module_register 'ufw' 'UFW' 'yatta_module_ufw_prompt' 'yatta_module_ufw_apply'
+  yatta_module_register 'system-check' 'System Check' 'yatta_module_system_check_prompt' 'yatta_module_system_check_pre_apply' 'yatta_module_system_check_apply' 'yatta_module_system_check_post_apply'
+  yatta_module_register 'hostname' 'Hostname' 'yatta_module_hostname_prompt' 'yatta_module_hostname_pre_apply' 'yatta_module_hostname_apply' 'yatta_module_hostname_post_apply'
+  yatta_module_register 'timezone' 'Timezone' 'yatta_module_timezone_prompt' 'yatta_module_timezone_pre_apply' 'yatta_module_timezone_apply' 'yatta_module_timezone_post_apply'
+  yatta_module_register 'user' 'User' 'yatta_module_user_prompt' 'yatta_module_user_pre_apply' 'yatta_module_user_apply' 'yatta_module_user_post_apply'
+  yatta_module_register 'packages' 'Packages' 'yatta_module_packages_prompt' 'yatta_module_packages_pre_apply' 'yatta_module_packages_apply' 'yatta_module_packages_post_apply'
+  yatta_module_register 'ufw' 'UFW' 'yatta_module_ufw_prompt' 'yatta_module_ufw_pre_apply' 'yatta_module_ufw_apply' 'yatta_module_ufw_post_apply'
 }
 
 yatta_main "$@"
