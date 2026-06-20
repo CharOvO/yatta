@@ -98,6 +98,23 @@ yatta_ui_input() {
   printf '%s\n' "$answer"
 }
 
+yatta_ui_multiline_input() {
+  local prompt="$1"
+  local line
+  printf '%s\n' "$prompt" >&2
+  printf '%s\n' "输入完成后提交空行；非交互环境下默认留空。" >&2
+  if ! yatta_has_tty; then
+    printf '%s\n' "${YATTA_TEST_MULTILINE_INPUT:-}"
+    return 0
+  fi
+  while true; do
+    IFS= read -r line </dev/tty || break
+    line="${line//$'\r'/}"
+    [[ -z "$line" ]] && break
+    printf '%s\n' "$line"
+  done
+}
+
 yatta_ui_confirm() {
   local prompt="$1"
   local default="${2:-n}"

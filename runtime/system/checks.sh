@@ -89,6 +89,12 @@ yatta_valid_hostname() {
   done
 }
 
+yatta_valid_username() {
+  local username="$1"
+  [[ "$username" != "root" ]] || return 1
+  [[ "$username" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]]
+}
+
 yatta_current_timezone() {
   if yatta_test_mode; then
     printf '%s\n' "${YATTA_TEST_TIMEZONE:-UTC}"
@@ -138,6 +144,37 @@ yatta_user_in_group() {
   id -nG "$username" 2>/dev/null | tr ' ' '\n' | grep -Fx -- "$group" >/dev/null
 }
 
+yatta_user_home() {
+  local username="$1"
+  if yatta_test_mode; then
+    printf '/home/%s\n' "$username"
+    return 0
+  fi
+  getent passwd "$username" | awk -F: '{ print $6; exit }'
+}
+
+yatta_list_normal_users() {
+  if yatta_test_mode; then
+    printf '%s\n' ${YATTA_TEST_NORMAL_USERS:-}
+    return 0
+  fi
+  awk -F: '$3 >= 1000 && $3 < 60000 && $1 != "nobody" { print $1 }' /etc/passwd
+}
+
+yatta_user_is_protected() {
+  local username="$1"
+  [[ -z "$username" ]] && return 0
+  [[ "$username" == "root" ]] && return 0
+  [[ -n "${YATTA_USER_NAME:-}" && "$username" == "$YATTA_USER_NAME" ]] && return 0
+  [[ -n "${SUDO_USER:-}" && "$username" == "$SUDO_USER" ]] && return 0
+  return 1
+}
+
+yatta_valid_ssh_public_key() {
+  local key="$1"
+  [[ "$key" =~ ^(ssh-rsa|ssh-ed25519|ecdsa-sha2-nistp256|ecdsa-sha2-nistp384|ecdsa-sha2-nistp521|sk-ssh-ed25519@openssh.com|sk-ecdsa-sha2-nistp256@openssh.com)[[:space:]]+[A-Za-z0-9+/=]+([[:space:]].*)?$ ]]
+}
+
 yatta_package_installed() {
   local package="$1"
   if yatta_test_mode; then
@@ -154,6 +191,48 @@ yatta_missing_packages() {
       printf '%s\n' "$package"
     fi
   done
+}
+
+yatta_current_swap_bytes() {
+  if yatta_test_mode; then
+    printf '%s\n' "${YATTA_TEST_SWAP_BYTES:-0}"
+    return 0
+  fi
+  awk 'NR > 1 { total += $3 } END { printf "%.0f\n", total * 1024 }' /proc/swaps 2>/dev/null
+}
+
+yatta_memory_total_mb() {
+  if yatta_test_mode; then
+    printf '%s\n' "${YATTA_TEST_MEMORY_MB:-2048}"
+    return 0
+  fi
+  awk '/^MemTotal:/ { printf "%d\n", int($2 / 1024); exit }' /proc/meminfo 2>/dev/null
+}
+
+yatta_root_available_mb() {
+  if yatta_test_mode; then
+    printf '%s\n' "${YATTA_TEST_ROOT_AVAILABLE_MB:-8192}"
+    return 0
+  fi
+  df -Pm / 2>/dev/null | awk 'NR == 2 { print $4; exit }'
+}
+
+yatta_recommended_swap_mb() {
+  local memory_mb="$1"
+  local recommended
+  if [[ ! "$memory_mb" =~ ^[0-9]+$ ]] || ((memory_mb <= 0)); then
+    printf '%s\n' "1024"
+    return 0
+  fi
+  recommended=$((memory_mb / 2))
+  ((recommended < 1024)) && recommended=1024
+  ((recommended > 4096)) && recommended=4096
+  printf '%s\n' "$recommended"
+}
+
+yatta_valid_swap_size_mb() {
+  local size_mb="$1"
+  [[ "$size_mb" =~ ^[0-9]+$ ]] && ((size_mb >= 256 && size_mb <= 32768))
 }
 
 yatta_valid_port() {

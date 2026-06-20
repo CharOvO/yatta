@@ -1,5 +1,6 @@
-# 这里封装 Ubuntu 上的系统修改命令。模块只调用这些函数，
-# 这样后续更换发行版适配或补充 dry-run 验证时不用修改每个模块。
+# 这里封装跨模块复用或平台差异明显的 Ubuntu 系统修改命令。
+# 模块私有的一次性流程可以留在模块内，但仍应复用 yatta_run_command
+# 获得一致的 dry-run 行为。
 
 yatta_command_preview() {
   local part
@@ -88,6 +89,79 @@ yatta_ensure_sudo_group() {
     return 0
   fi
   yatta_run_command usermod -aG sudo "$username"
+}
+
+yatta_ensure_sudo_nopasswd() {
+  local username="$1"
+  local target="/etc/sudoers.d/yatta-${username}"
+  local content="${username} ALL=(ALL) NOPASSWD:ALL"$'\n'
+  local tmp
+  if [[ -f "$target" ]] && [[ "$(cat "$target")" == "$content" ]]; then
+    yatta_log_ok "sudo 免密配置已是期望内容：${target}"
+    return 0
+  fi
+  if yatta_dry_run; then
+    yatta_log_info "[dry-run] write validated sudoers drop-in ${target}"
+    return 0
+  fi
+  if ! yatta_command_exists visudo; then
+    yatta_log_error "缺少 visudo，无法安全写入 sudoers 配置。"
+    return 1
+  fi
+  tmp="$(mktemp)" || return 1
+  printf '%s' "$content" >"$tmp"
+  chmod 0440 "$tmp"
+  if ! visudo -cf "$tmp" >/dev/null; then
+    rm -f "$tmp"
+    yatta_log_error "sudoers drop-in 校验失败，未写入免密配置。"
+    return 1
+  fi
+  install -m 0440 "$tmp" "$target"
+  rm -f "$tmp"
+}
+
+yatta_ensure_authorized_keys() {
+  local username="$1"
+  shift
+  local home ssh_dir auth_file key
+  home="$(yatta_user_home "$username")"
+  if [[ -z "$home" ]]; then
+    yatta_log_error "无法确定用户 ${username} 的 home 目录。"
+    return 1
+  fi
+  ssh_dir="${home}/.ssh"
+  auth_file="${ssh_dir}/authorized_keys"
+  if yatta_dry_run; then
+    yatta_log_info "[dry-run] ensure ${auth_file} with $# SSH public key(s)"
+    return 0
+  fi
+  install -d -m 0700 -o "$username" -g "$username" "$ssh_dir" || return 1
+  touch "$auth_file" || return 1
+  chown "$username:$username" "$auth_file" || return 1
+  chmod 0600 "$auth_file" || return 1
+  for key in "$@"; do
+    if grep -Fx -- "$key" "$auth_file" >/dev/null 2>&1; then
+      continue
+    fi
+    printf '%s\n' "$key" >>"$auth_file"
+  done
+}
+
+yatta_delete_user_keep_home() {
+  local username="$1"
+  if yatta_user_is_protected "$username"; then
+    yatta_log_error "拒绝删除受保护用户：${username}"
+    return 1
+  fi
+  if ! yatta_user_exists "$username"; then
+    yatta_log_ok "用户 ${username} 不存在，跳过删除。"
+    return 0
+  fi
+  if yatta_command_exists deluser; then
+    yatta_run_command deluser "$username"
+  else
+    yatta_run_command userdel "$username"
+  fi
 }
 
 yatta_backup_file() {

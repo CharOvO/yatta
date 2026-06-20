@@ -1,0 +1,15 @@
+id: swap
+name: Swap
+description: Configure a conservative swapfile
+default_enabled: true
+runtime_default: true
+risk: medium
+group: system-basics
+stage: system
+order: 125
+requires: []
+before: []
+after: [system-check]
+conflicts: []
+supports:
+  distros: [ubuntu]
