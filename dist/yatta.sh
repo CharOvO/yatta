@@ -9,6 +9,12 @@ YATTA_VERSION='1.0.0'
 
 YATTA_MODULE_IDS=()
 YATTA_MODULE_NAMES=()
+YATTA_MODULE_STAGES=()
+YATTA_MODULE_GROUPS=()
+YATTA_MODULE_RISKS=()
+YATTA_MODULE_RUNTIME_DEFAULTS=()
+YATTA_MODULE_LOCKED=()
+YATTA_MODULE_ENABLED=()
 YATTA_MODULE_PROMPT_FNS=()
 YATTA_MODULE_PRE_APPLY_FNS=()
 YATTA_MODULE_APPLY_FNS=()
@@ -26,10 +32,129 @@ YATTA_PORT_PLAN_PURPOSES=()
 yatta_module_register() {
   YATTA_MODULE_IDS+=("$1")
   YATTA_MODULE_NAMES+=("$2")
-  YATTA_MODULE_PROMPT_FNS+=("$3")
-  YATTA_MODULE_PRE_APPLY_FNS+=("$4")
-  YATTA_MODULE_APPLY_FNS+=("$5")
-  YATTA_MODULE_POST_APPLY_FNS+=("$6")
+  YATTA_MODULE_STAGES+=("$3")
+  YATTA_MODULE_GROUPS+=("$4")
+  YATTA_MODULE_RISKS+=("$5")
+  YATTA_MODULE_RUNTIME_DEFAULTS+=("$6")
+  YATTA_MODULE_LOCKED+=("$7")
+  YATTA_MODULE_ENABLED+=("false")
+  YATTA_MODULE_PROMPT_FNS+=("$8")
+  YATTA_MODULE_PRE_APPLY_FNS+=("$9")
+  YATTA_MODULE_APPLY_FNS+=("${10}")
+  YATTA_MODULE_POST_APPLY_FNS+=("${11}")
+}
+
+yatta_module_selection_init() {
+  local index risk runtime_default locked
+  for index in "${!YATTA_MODULE_IDS[@]}"; do
+    risk="${YATTA_MODULE_RISKS[$index]}"
+    runtime_default="${YATTA_MODULE_RUNTIME_DEFAULTS[$index]}"
+    locked="${YATTA_MODULE_LOCKED[$index]}"
+    if [[ "$locked" == "true" ]]; then
+      YATTA_MODULE_ENABLED[$index]="true"
+    elif [[ "$risk" == "high" ]]; then
+      YATTA_MODULE_ENABLED[$index]="false"
+    else
+      YATTA_MODULE_ENABLED[$index]="$runtime_default"
+    fi
+  done
+}
+
+yatta_module_is_enabled() {
+  local index="$1"
+  [[ "${YATTA_MODULE_ENABLED[$index]}" == "true" ]]
+}
+
+yatta_module_selection_apply_list() {
+  local raw_list="$1"
+  local id wanted index
+  IFS=',' read -ra wanted <<<"$raw_list"
+  for index in "${!YATTA_MODULE_IDS[@]}"; do
+    if [[ "${YATTA_MODULE_LOCKED[$index]}" == "true" ]]; then
+      YATTA_MODULE_ENABLED[$index]="true"
+    else
+      YATTA_MODULE_ENABLED[$index]="false"
+    fi
+  done
+  for id in "${wanted[@]}"; do
+    id="${id//[[:space:]]/}"
+    [[ -z "$id" ]] && continue
+    for index in "${!YATTA_MODULE_IDS[@]}"; do
+      if [[ "${YATTA_MODULE_IDS[$index]}" == "$id" ]]; then
+        YATTA_MODULE_ENABLED[$index]="true"
+      fi
+    done
+  done
+}
+
+yatta_module_selection_show() {
+  local index marker locked_label risk_label group_label
+  printf '%s\n' "本次启用模块：" >&2
+  printf '  %-4s %-4s %-14s %-12s %-8s %s\n' "序号" "启用" "阶段" "分组" "风险" "模块" >&2
+  for index in "${!YATTA_MODULE_IDS[@]}"; do
+    marker="[ ]"
+    yatta_module_is_enabled "$index" && marker="[x]"
+    locked_label=""
+    [[ "${YATTA_MODULE_LOCKED[$index]}" == "true" ]] && locked_label=" locked"
+    risk_label="${YATTA_MODULE_RISKS[$index]}"
+    group_label="${YATTA_MODULE_GROUPS[$index]}"
+    printf '  %-4d %-4s %-14s %-12s %-8s %s%s\n' \
+      "$((index + 1))" \
+      "$marker" \
+      "${YATTA_MODULE_STAGES[$index]}" \
+      "$group_label" \
+      "$risk_label" \
+      "${YATTA_MODULE_NAMES[$index]}" \
+      "$locked_label" >&2
+  done
+}
+
+yatta_module_selection_prompt() {
+  local answer index item
+  local items=()
+  while true; do
+    yatta_module_selection_show
+    printf '%s' "输入要切换启用状态的序号，多个序号用逗号分隔；直接回车继续: " >&2
+    if yatta_has_tty; then
+      IFS= read -r answer </dev/tty || answer=""
+    else
+      IFS= read -r answer || answer=""
+    fi
+    answer="${answer//$'\r'/}"
+    [[ -z "$answer" ]] && return 0
+    IFS=',' read -ra items <<<"$answer"
+    for item in "${items[@]}"; do
+      item="${item//[[:space:]]/}"
+      if [[ ! "$item" =~ ^[0-9]+$ ]] || ((item < 1 || item > ${#YATTA_MODULE_IDS[@]})); then
+        yatta_log_warn "忽略无效序号：${item}"
+        continue
+      fi
+      index=$((item - 1))
+      if [[ "${YATTA_MODULE_LOCKED[$index]}" == "true" ]]; then
+        yatta_log_warn "模块 ${YATTA_MODULE_NAMES[$index]} 不可取消。"
+        continue
+      fi
+      if yatta_module_is_enabled "$index"; then
+        YATTA_MODULE_ENABLED[$index]="false"
+      else
+        YATTA_MODULE_ENABLED[$index]="true"
+      fi
+    done
+  done
+}
+
+yatta_select_runtime_modules() {
+  yatta_module_selection_init
+  if [[ -n "${YATTA_TEST_MODULES:-}" ]]; then
+    yatta_module_selection_apply_list "$YATTA_TEST_MODULES"
+  fi
+  yatta_ui_section "本次启用模块"
+  if yatta_test_mode || ! yatta_has_tty; then
+    yatta_module_selection_show
+    return 0
+  fi
+  yatta_log_info "高风险模块默认不启用；locked 模块不可取消。"
+  yatta_module_selection_prompt
 }
 
 yatta_version() {
@@ -133,7 +258,7 @@ yatta_call_function() {
 }
 
 yatta_has_tty() {
-  [[ -r /dev/tty && -w /dev/tty ]]
+  [[ -t 0 && -r /dev/tty && -w /dev/tty ]]
 }
 
 yatta_test_mode() {
@@ -142,6 +267,13 @@ yatta_test_mode() {
 
 yatta_dry_run() {
   [[ "${YATTA_DRY_RUN:-}" == "1" ]]
+}
+
+yatta_string_trim() {
+  local value="$1"
+  value="${value#"${value%%[![:space:]]*}"}"
+  value="${value%"${value##*[![:space:]]}"}"
+  printf '%s\n' "$value"
 }
 
 # ===== runtime/core/main.sh =====
@@ -155,6 +287,10 @@ yatta_run_prompts() {
     id="${YATTA_MODULE_IDS[$index]}"
     name="${YATTA_MODULE_NAMES[$index]}"
     prompt_fn="${YATTA_MODULE_PROMPT_FNS[$index]}"
+    if ! yatta_module_is_enabled "$index"; then
+      yatta_log_info "跳过未启用模块：${name}"
+      continue
+    fi
     yatta_ui_section "收集配置：${name}"
     if ! yatta_call_function "$prompt_fn"; then
       yatta_log_error "模块 ${id} 的询问阶段失败。"
@@ -171,6 +307,10 @@ yatta_run_applies() {
   for index in "${!YATTA_MODULE_IDS[@]}"; do
     id="${YATTA_MODULE_IDS[$index]}"
     name="${YATTA_MODULE_NAMES[$index]}"
+    if ! yatta_module_is_enabled "$index"; then
+      yatta_log_info "跳过未启用模块：${name}"
+      continue
+    fi
     case "$phase" in
       pre) apply_fn="${YATTA_MODULE_PRE_APPLY_FNS[$index]}" ;;
       post) apply_fn="${YATTA_MODULE_POST_APPLY_FNS[$index]}" ;;
@@ -211,6 +351,7 @@ yatta_main() {
     return 1
   fi
   yatta_register_generated_modules
+  yatta_select_runtime_modules
 
   yatta_ui_section "配置收集"
   yatta_run_prompts || return 1
@@ -341,6 +482,23 @@ yatta_ui_input() {
     answer="$default"
   fi
   printf '%s\n' "$answer"
+}
+
+yatta_ui_multiline_input() {
+  local prompt="$1"
+  local line
+  printf '%s\n' "$prompt" >&2
+  printf '%s\n' "输入完成后提交空行；非交互环境下默认留空。" >&2
+  if ! yatta_has_tty; then
+    printf '%s\n' "${YATTA_TEST_MULTILINE_INPUT:-}"
+    return 0
+  fi
+  while true; do
+    IFS= read -r line </dev/tty || break
+    line="${line//$'\r'/}"
+    [[ -z "$line" ]] && break
+    printf '%s\n' "$line"
+  done
 }
 
 yatta_ui_confirm() {
@@ -557,6 +715,12 @@ yatta_valid_hostname() {
   done
 }
 
+yatta_valid_username() {
+  local username="$1"
+  [[ "$username" != "root" ]] || return 1
+  [[ "$username" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]]
+}
+
 yatta_current_timezone() {
   if yatta_test_mode; then
     printf '%s\n' "${YATTA_TEST_TIMEZONE:-UTC}"
@@ -606,6 +770,37 @@ yatta_user_in_group() {
   id -nG "$username" 2>/dev/null | tr ' ' '\n' | grep -Fx -- "$group" >/dev/null
 }
 
+yatta_user_home() {
+  local username="$1"
+  if yatta_test_mode; then
+    printf '/home/%s\n' "$username"
+    return 0
+  fi
+  getent passwd "$username" | awk -F: '{ print $6; exit }'
+}
+
+yatta_list_normal_users() {
+  if yatta_test_mode; then
+    printf '%s\n' ${YATTA_TEST_NORMAL_USERS:-}
+    return 0
+  fi
+  awk -F: '$3 >= 1000 && $3 < 60000 && $1 != "nobody" { print $1 }' /etc/passwd
+}
+
+yatta_user_is_protected() {
+  local username="$1"
+  [[ -z "$username" ]] && return 0
+  [[ "$username" == "root" ]] && return 0
+  [[ -n "${YATTA_USER_NAME:-}" && "$username" == "$YATTA_USER_NAME" ]] && return 0
+  [[ -n "${SUDO_USER:-}" && "$username" == "$SUDO_USER" ]] && return 0
+  return 1
+}
+
+yatta_valid_ssh_public_key() {
+  local key="$1"
+  [[ "$key" =~ ^(ssh-rsa|ssh-ed25519|ecdsa-sha2-nistp256|ecdsa-sha2-nistp384|ecdsa-sha2-nistp521|sk-ssh-ed25519@openssh.com|sk-ecdsa-sha2-nistp256@openssh.com)[[:space:]]+[A-Za-z0-9+/=]+([[:space:]].*)?$ ]]
+}
+
 yatta_package_installed() {
   local package="$1"
   if yatta_test_mode; then
@@ -622,6 +817,48 @@ yatta_missing_packages() {
       printf '%s\n' "$package"
     fi
   done
+}
+
+yatta_current_swap_bytes() {
+  if yatta_test_mode; then
+    printf '%s\n' "${YATTA_TEST_SWAP_BYTES:-0}"
+    return 0
+  fi
+  awk 'NR > 1 { total += $3 } END { printf "%.0f\n", total * 1024 }' /proc/swaps 2>/dev/null
+}
+
+yatta_memory_total_mb() {
+  if yatta_test_mode; then
+    printf '%s\n' "${YATTA_TEST_MEMORY_MB:-2048}"
+    return 0
+  fi
+  awk '/^MemTotal:/ { printf "%d\n", int($2 / 1024); exit }' /proc/meminfo 2>/dev/null
+}
+
+yatta_root_available_mb() {
+  if yatta_test_mode; then
+    printf '%s\n' "${YATTA_TEST_ROOT_AVAILABLE_MB:-8192}"
+    return 0
+  fi
+  df -Pm / 2>/dev/null | awk 'NR == 2 { print $4; exit }'
+}
+
+yatta_recommended_swap_mb() {
+  local memory_mb="$1"
+  local recommended
+  if [[ ! "$memory_mb" =~ ^[0-9]+$ ]] || ((memory_mb <= 0)); then
+    printf '%s\n' "1024"
+    return 0
+  fi
+  recommended=$((memory_mb / 2))
+  ((recommended < 1024)) && recommended=1024
+  ((recommended > 4096)) && recommended=4096
+  printf '%s\n' "$recommended"
+}
+
+yatta_valid_swap_size_mb() {
+  local size_mb="$1"
+  [[ "$size_mb" =~ ^[0-9]+$ ]] && ((size_mb >= 256 && size_mb <= 32768))
 }
 
 yatta_valid_port() {
@@ -730,8 +967,9 @@ yatta_system_summary() {
 }
 
 # ===== runtime/adapter/ubuntu.sh =====
-# 这里封装 Ubuntu 上的系统修改命令。模块只调用这些函数，
-# 这样后续更换发行版适配或补充 dry-run 验证时不用修改每个模块。
+# 这里封装跨模块复用或平台差异明显的 Ubuntu 系统修改命令。
+# 模块私有的一次性流程可以留在模块内，但仍应复用 yatta_run_command
+# 获得一致的 dry-run 行为。
 
 yatta_command_preview() {
   local part
@@ -820,6 +1058,79 @@ yatta_ensure_sudo_group() {
     return 0
   fi
   yatta_run_command usermod -aG sudo "$username"
+}
+
+yatta_ensure_sudo_nopasswd() {
+  local username="$1"
+  local target="/etc/sudoers.d/yatta-${username}"
+  local content="${username} ALL=(ALL) NOPASSWD:ALL"$'\n'
+  local tmp
+  if [[ -f "$target" ]] && [[ "$(cat "$target")" == "$content" ]]; then
+    yatta_log_ok "sudo 免密配置已是期望内容：${target}"
+    return 0
+  fi
+  if yatta_dry_run; then
+    yatta_log_info "[dry-run] write validated sudoers drop-in ${target}"
+    return 0
+  fi
+  if ! yatta_command_exists visudo; then
+    yatta_log_error "缺少 visudo，无法安全写入 sudoers 配置。"
+    return 1
+  fi
+  tmp="$(mktemp)" || return 1
+  printf '%s' "$content" >"$tmp"
+  chmod 0440 "$tmp"
+  if ! visudo -cf "$tmp" >/dev/null; then
+    rm -f "$tmp"
+    yatta_log_error "sudoers drop-in 校验失败，未写入免密配置。"
+    return 1
+  fi
+  install -m 0440 "$tmp" "$target"
+  rm -f "$tmp"
+}
+
+yatta_ensure_authorized_keys() {
+  local username="$1"
+  shift
+  local home ssh_dir auth_file key
+  home="$(yatta_user_home "$username")"
+  if [[ -z "$home" ]]; then
+    yatta_log_error "无法确定用户 ${username} 的 home 目录。"
+    return 1
+  fi
+  ssh_dir="${home}/.ssh"
+  auth_file="${ssh_dir}/authorized_keys"
+  if yatta_dry_run; then
+    yatta_log_info "[dry-run] ensure ${auth_file} with $# SSH public key(s)"
+    return 0
+  fi
+  install -d -m 0700 -o "$username" -g "$username" "$ssh_dir" || return 1
+  touch "$auth_file" || return 1
+  chown "$username:$username" "$auth_file" || return 1
+  chmod 0600 "$auth_file" || return 1
+  for key in "$@"; do
+    if grep -Fx -- "$key" "$auth_file" >/dev/null 2>&1; then
+      continue
+    fi
+    printf '%s\n' "$key" >>"$auth_file"
+  done
+}
+
+yatta_delete_user_keep_home() {
+  local username="$1"
+  if yatta_user_is_protected "$username"; then
+    yatta_log_error "拒绝删除受保护用户：${username}"
+    return 1
+  fi
+  if ! yatta_user_exists "$username"; then
+    yatta_log_ok "用户 ${username} 不存在，跳过删除。"
+    return 0
+  fi
+  if yatta_command_exists deluser; then
+    yatta_run_command deluser "$username"
+  else
+    yatta_run_command userdel "$username"
+  fi
 }
 
 yatta_backup_file() {
@@ -992,38 +1303,211 @@ yatta_module_timezone_post_apply() {
   return 0
 }
 
+yatta_module_swap_prompt() {
+# swap 模块只规划单个 swapfile。已有 swap 时默认不动，避免覆盖用户已有策略。
+YATTA_SWAP_ACTION="skip"
+YATTA_SWAP_PATH="/swapfile"
+YATTA_SWAP_SIZE_MB="0"
+
+YATTA_SWAP_CURRENT_BYTES="$(yatta_current_swap_bytes)"
+YATTA_SWAP_MEMORY_MB="$(yatta_memory_total_mb)"
+YATTA_SWAP_ROOT_AVAILABLE_MB="$(yatta_root_available_mb)"
+YATTA_SWAP_RECOMMENDED_MB="$(yatta_recommended_swap_mb "$YATTA_SWAP_MEMORY_MB")"
+
+if [[ "$YATTA_SWAP_CURRENT_BYTES" =~ ^[0-9]+$ ]] && ((YATTA_SWAP_CURRENT_BYTES > 0)); then
+  yatta_plan_add "swap" "ok" "检测到系统已有 swap，跳过创建。"
+else
+  yatta_log_info "当前未检测到 swap；内存约 ${YATTA_SWAP_MEMORY_MB} MB，根分区可用约 ${YATTA_SWAP_ROOT_AVAILABLE_MB} MB。"
+  choice="$(yatta_ui_select "swap 设置" 0 "创建推荐大小：${YATTA_SWAP_RECOMMENDED_MB} MB" "输入自定义大小" "跳过 swap 设置")"
+  case "$choice" in
+    创建推荐大小*)
+      YATTA_SWAP_ACTION="create"
+      YATTA_SWAP_SIZE_MB="$YATTA_SWAP_RECOMMENDED_MB"
+      ;;
+    输入自定义大小)
+      while true; do
+        YATTA_SWAP_SIZE_MB="$(yatta_ui_input "swap 大小（MB，256-32768）" "$YATTA_SWAP_RECOMMENDED_MB")"
+        if yatta_valid_swap_size_mb "$YATTA_SWAP_SIZE_MB"; then
+          YATTA_SWAP_ACTION="create"
+          break
+        fi
+        yatta_log_warn "swap 大小必须是 256 到 32768 之间的整数 MB。"
+      done
+      ;;
+  esac
+
+  if [[ "$YATTA_SWAP_ACTION" == "create" ]]; then
+    if [[ "$YATTA_SWAP_ROOT_AVAILABLE_MB" =~ ^[0-9]+$ ]] && ((YATTA_SWAP_ROOT_AVAILABLE_MB <= YATTA_SWAP_SIZE_MB + 256)); then
+      yatta_log_warn "根分区可用空间不足以安全创建该 swapfile，已跳过。"
+      YATTA_SWAP_ACTION="skip"
+    fi
+  fi
+
+  if [[ "$YATTA_SWAP_ACTION" == "create" ]]; then
+    yatta_plan_add "swap" "info" "将创建 ${YATTA_SWAP_PATH}，大小 ${YATTA_SWAP_SIZE_MB} MB，并写入 /etc/fstab。"
+  else
+    yatta_plan_add "swap" "info" "跳过 swap 设置。"
+  fi
+fi
+}
+
+yatta_module_swap_pre_apply() {
+  return 0
+}
+
+yatta_module_swap_apply() {
+# apply 阶段重新检查 swap 状态，避免重复创建或覆盖已有策略。
+if [[ "${YATTA_SWAP_ACTION:-skip}" != "create" ]]; then
+  yatta_log_info "已跳过 swap 设置。"
+  return 0
+fi
+
+if ! yatta_valid_swap_size_mb "${YATTA_SWAP_SIZE_MB:-}"; then
+  yatta_log_error "swap 大小无效，已停止。"
+  return 1
+fi
+
+current_swap_bytes="$(yatta_current_swap_bytes)"
+if [[ "$current_swap_bytes" =~ ^[0-9]+$ ]] && ((current_swap_bytes > 0)); then
+  yatta_log_ok "系统已存在 swap，跳过创建。"
+  return 0
+fi
+
+available_mb="$(yatta_root_available_mb)"
+if [[ "$available_mb" =~ ^[0-9]+$ ]] && ((available_mb <= YATTA_SWAP_SIZE_MB + 256)); then
+  yatta_log_error "根分区可用空间不足，无法安全创建 ${YATTA_SWAP_SIZE_MB} MB swapfile。"
+  return 1
+fi
+
+swap_path="${YATTA_SWAP_PATH:-/swapfile}"
+fstab_line="${swap_path} none swap sw 0 0"
+
+if swapon --show=NAME --noheadings 2>/dev/null | grep -Fx -- "$swap_path" >/dev/null; then
+  yatta_log_ok "swapfile 已启用：${swap_path}"
+else
+  if [[ -e "$swap_path" ]]; then
+    yatta_log_warn "swapfile 路径已存在，将尝试直接启用：${swap_path}"
+  elif yatta_command_exists fallocate; then
+    yatta_run_command fallocate -l "${YATTA_SWAP_SIZE_MB}M" "$swap_path" || return 1
+  else
+    yatta_run_command dd if=/dev/zero of="$swap_path" bs=1M count="$YATTA_SWAP_SIZE_MB" status=progress || return 1
+  fi
+
+  yatta_run_command chmod 0600 "$swap_path" || return 1
+  yatta_run_command mkswap "$swap_path" || return 1
+  yatta_run_command swapon "$swap_path" || return 1
+fi
+
+if [[ -r /etc/fstab ]] && grep -Fx -- "$fstab_line" /etc/fstab >/dev/null 2>&1; then
+  yatta_log_ok "fstab 已包含 swapfile 配置。"
+elif yatta_dry_run; then
+  yatta_log_info "[dry-run] append to /etc/fstab: ${fstab_line}"
+else
+  printf '%s\n' "$fstab_line" >>/etc/fstab
+fi
+}
+
+yatta_module_swap_post_apply() {
+  return 0
+}
+
 yatta_module_user_prompt() {
-# user 模块不收集密码；新用户密码交给 apply 阶段的 adduser 交互处理。
+# user 模块只收集账户初始化意图。密码交给 adduser，SSH 服务安全策略交给后续 ssh-hardening。
 YATTA_USER_ACTION="skip"
 YATTA_USER_NAME=""
+YATTA_USER_SUDO_NOPASSWD="0"
+YATTA_USER_IMPORT_KEYS="0"
+YATTA_USER_SSH_KEYS=()
+YATTA_USER_DELETE_USERS=()
 
 if yatta_ui_confirm "是否创建或确认一个非 root sudo 用户？" "y"; then
   default_user="${SUDO_USER:-deploy}"
   [[ "$default_user" == "root" ]] && default_user="deploy"
   while true; do
     YATTA_USER_NAME="$(yatta_ui_input "sudo 用户名" "$default_user")"
-    if [[ "$YATTA_USER_NAME" == "root" ]]; then
-      yatta_log_warn "root 已存在且不作为本模块创建目标，请输入非 root 用户名。"
-      continue
-    fi
-    if [[ "$YATTA_USER_NAME" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]]; then
+    if yatta_valid_username "$YATTA_USER_NAME"; then
       YATTA_USER_ACTION="ensure"
       break
     fi
-    yatta_log_warn "用户名需以小写字母或下划线开头，只包含小写字母、数字、下划线或短横线，最长 32 个字符。"
+    yatta_log_warn "用户名需以小写字母或下划线开头，只包含小写字母、数字、下划线或短横线，最长 32 个字符，且不能是 root。"
   done
+
+  if yatta_ui_confirm "是否为 ${YATTA_USER_NAME} 设置 sudo 免密？" "n"; then
+    YATTA_USER_SUDO_NOPASSWD="1"
+  fi
+
+  if yatta_ui_confirm "是否向 ${YATTA_USER_NAME} 导入 SSH 公钥？" "n"; then
+    while IFS= read -r key_line; do
+      key_line="$(yatta_string_trim "$key_line")"
+      [[ -z "$key_line" ]] && continue
+      if ! yatta_valid_ssh_public_key "$key_line"; then
+        yatta_log_warn "忽略格式不像 OpenSSH 公钥的输入。"
+        continue
+      fi
+      duplicate="0"
+      for existing_key in "${YATTA_USER_SSH_KEYS[@]}"; do
+        [[ "$existing_key" == "$key_line" ]] && duplicate="1"
+      done
+      [[ "$duplicate" == "1" ]] && continue
+      YATTA_USER_SSH_KEYS+=("$key_line")
+    done < <(yatta_ui_multiline_input "请粘贴 SSH 公钥，每行一个。")
+    if [[ "${#YATTA_USER_SSH_KEYS[@]}" -gt 0 ]]; then
+      YATTA_USER_IMPORT_KEYS="1"
+    else
+      yatta_log_warn "没有收到可导入的有效 SSH 公钥。"
+    fi
+  fi
+
+  candidate_users=()
+  while IFS= read -r candidate_user; do
+    candidate_user="$(yatta_string_trim "$candidate_user")"
+    [[ -z "$candidate_user" ]] && continue
+    yatta_user_is_protected "$candidate_user" && continue
+    candidate_users+=("$candidate_user")
+  done < <(yatta_list_normal_users)
+
+  if [[ "${#candidate_users[@]}" -gt 0 ]]; then
+    yatta_log_info "可检查的普通用户：${candidate_users[*]}"
+    if yatta_ui_confirm "是否逐个确认删除多余普通用户？默认保留 home。" "n"; then
+      for candidate_user in "${candidate_users[@]}"; do
+        if yatta_ui_confirm "确认删除用户 ${candidate_user}？" "n"; then
+          YATTA_USER_DELETE_USERS+=("$candidate_user")
+        fi
+      done
+    fi
+  fi
 fi
 
 if [[ "$YATTA_USER_ACTION" == "skip" ]]; then
   yatta_plan_add "user" "warn" "跳过非 root sudo 用户创建。"
-elif yatta_user_exists "$YATTA_USER_NAME"; then
-  if yatta_user_in_group "$YATTA_USER_NAME" "sudo"; then
-    yatta_plan_add "user" "ok" "用户 ${YATTA_USER_NAME} 已存在且已在 sudo 组。"
-  else
-    yatta_plan_add "user" "info" "用户 ${YATTA_USER_NAME} 已存在，将加入 sudo 组。"
-  fi
 else
-  yatta_plan_add "user" "info" "将创建非 root sudo 用户 ${YATTA_USER_NAME}；密码由 adduser 在执行阶段处理。"
+  if yatta_user_exists "$YATTA_USER_NAME"; then
+    if yatta_user_in_group "$YATTA_USER_NAME" "sudo"; then
+      yatta_plan_add "user" "ok" "用户 ${YATTA_USER_NAME} 已存在且已在 sudo 组。"
+    else
+      yatta_plan_add "user" "info" "用户 ${YATTA_USER_NAME} 已存在，将加入 sudo 组。"
+    fi
+  else
+    yatta_plan_add "user" "info" "将创建非 root sudo 用户 ${YATTA_USER_NAME}；密码由 adduser 在执行阶段处理。"
+  fi
+
+  if [[ "$YATTA_USER_SUDO_NOPASSWD" == "1" ]]; then
+    yatta_plan_add "user" "warn" "将为 ${YATTA_USER_NAME} 写入独立 sudo 免密配置。"
+  else
+    yatta_plan_add "user" "info" "不设置 sudo 免密。"
+  fi
+
+  if [[ "$YATTA_USER_IMPORT_KEYS" == "1" ]]; then
+    yatta_plan_add "user" "info" "将向 ${YATTA_USER_NAME} 导入 ${#YATTA_USER_SSH_KEYS[@]} 个 SSH 公钥。"
+  else
+    yatta_plan_add "user" "info" "不导入 SSH 公钥。"
+  fi
+
+  if [[ "${#YATTA_USER_DELETE_USERS[@]}" -gt 0 ]]; then
+    yatta_plan_add "user" "warn" "将删除普通用户（保留 home）：${YATTA_USER_DELETE_USERS[*]}"
+  else
+    yatta_plan_add "user" "info" "不删除其他普通用户。"
+  fi
 fi
 }
 
@@ -1032,22 +1516,44 @@ yatta_module_user_pre_apply() {
 }
 
 yatta_module_user_apply() {
-# apply 阶段才调用 adduser，让系统工具处理密码，脚本不保存明文密码。
+# apply 阶段才调用系统账户工具。所有危险动作都按 prompt 阶段的明确确认执行。
 if [[ "${YATTA_USER_ACTION:-skip}" == "skip" ]]; then
   yatta_log_warn "已跳过非 root sudo 用户创建。"
   return 0
 fi
 
-if [[ -z "${YATTA_USER_NAME:-}" || "$YATTA_USER_NAME" == "root" ]]; then
+if ! yatta_valid_username "${YATTA_USER_NAME:-}"; then
   yatta_log_error "sudo 用户名无效，已停止。"
   return 1
 fi
 
 if yatta_user_exists "$YATTA_USER_NAME"; then
   yatta_log_info "用户 ${YATTA_USER_NAME} 已存在。"
-  yatta_ensure_sudo_group "$YATTA_USER_NAME"
+  yatta_ensure_sudo_group "$YATTA_USER_NAME" || return 1
 else
-  yatta_add_sudo_user "$YATTA_USER_NAME"
+  yatta_add_sudo_user "$YATTA_USER_NAME" || return 1
+fi
+
+if [[ "${YATTA_USER_SUDO_NOPASSWD:-0}" == "1" ]]; then
+  yatta_ensure_sudo_nopasswd "$YATTA_USER_NAME" || return 1
+fi
+
+if [[ "${YATTA_USER_IMPORT_KEYS:-0}" == "1" ]]; then
+  if [[ "${#YATTA_USER_SSH_KEYS[@]}" -eq 0 ]]; then
+    yatta_log_warn "未找到可导入的 SSH 公钥，跳过。"
+  else
+    yatta_ensure_authorized_keys "$YATTA_USER_NAME" "${YATTA_USER_SSH_KEYS[@]}" || return 1
+  fi
+fi
+
+if [[ "${#YATTA_USER_DELETE_USERS[@]}" -gt 0 ]]; then
+  for delete_user in "${YATTA_USER_DELETE_USERS[@]}"; do
+    if yatta_user_is_protected "$delete_user"; then
+      yatta_log_error "拒绝删除受保护用户：${delete_user}"
+      return 1
+    fi
+    yatta_delete_user_keep_home "$delete_user" || return 1
+  done
 fi
 }
 
@@ -1249,12 +1755,13 @@ yatta_module_ufw_post_apply() {
 }
 
 yatta_register_generated_modules() {
-  yatta_module_register 'system-check' 'System Check' 'yatta_module_system_check_prompt' 'yatta_module_system_check_pre_apply' 'yatta_module_system_check_apply' 'yatta_module_system_check_post_apply'
-  yatta_module_register 'hostname' 'Hostname' 'yatta_module_hostname_prompt' 'yatta_module_hostname_pre_apply' 'yatta_module_hostname_apply' 'yatta_module_hostname_post_apply'
-  yatta_module_register 'timezone' 'Timezone' 'yatta_module_timezone_prompt' 'yatta_module_timezone_pre_apply' 'yatta_module_timezone_apply' 'yatta_module_timezone_post_apply'
-  yatta_module_register 'user' 'User' 'yatta_module_user_prompt' 'yatta_module_user_pre_apply' 'yatta_module_user_apply' 'yatta_module_user_post_apply'
-  yatta_module_register 'packages' 'Packages' 'yatta_module_packages_prompt' 'yatta_module_packages_pre_apply' 'yatta_module_packages_apply' 'yatta_module_packages_post_apply'
-  yatta_module_register 'ufw' 'UFW' 'yatta_module_ufw_prompt' 'yatta_module_ufw_pre_apply' 'yatta_module_ufw_apply' 'yatta_module_ufw_post_apply'
+  yatta_module_register 'system-check' 'System Check' 'preflight' 'preflight' 'low' true true 'yatta_module_system_check_prompt' 'yatta_module_system_check_pre_apply' 'yatta_module_system_check_apply' 'yatta_module_system_check_post_apply'
+  yatta_module_register 'hostname' 'Hostname' 'system' 'system-basics' 'low' true false 'yatta_module_hostname_prompt' 'yatta_module_hostname_pre_apply' 'yatta_module_hostname_apply' 'yatta_module_hostname_post_apply'
+  yatta_module_register 'timezone' 'Timezone' 'system' 'system-basics' 'low' true false 'yatta_module_timezone_prompt' 'yatta_module_timezone_pre_apply' 'yatta_module_timezone_apply' 'yatta_module_timezone_post_apply'
+  yatta_module_register 'swap' 'Swap' 'system' 'system-basics' 'medium' true false 'yatta_module_swap_prompt' 'yatta_module_swap_pre_apply' 'yatta_module_swap_apply' 'yatta_module_swap_post_apply'
+  yatta_module_register 'user' 'User' 'account' 'account' 'medium' true false 'yatta_module_user_prompt' 'yatta_module_user_pre_apply' 'yatta_module_user_apply' 'yatta_module_user_post_apply'
+  yatta_module_register 'packages' 'Packages' 'packages' 'packages' 'medium' true false 'yatta_module_packages_prompt' 'yatta_module_packages_pre_apply' 'yatta_module_packages_apply' 'yatta_module_packages_post_apply'
+  yatta_module_register 'ufw' 'UFW' 'firewall' 'firewall' 'high' false false 'yatta_module_ufw_prompt' 'yatta_module_ufw_pre_apply' 'yatta_module_ufw_apply' 'yatta_module_ufw_post_apply'
 }
 
 yatta_main "$@"
