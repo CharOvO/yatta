@@ -14,6 +14,12 @@ Yatta 是一个面向 Ubuntu 服务器的初始化工具。它把一台新的 Ub
 sudo bash dist/yatta.sh
 ```
 
+查看生成脚本版本：
+
+```text
+bash dist/yatta.sh --version
+```
+
 脚本会依次检查环境、收集配置、展示执行计划，并在你确认后才开始修改系统。v1 默认包含：
 
 - 环境检查：Ubuntu、root、Bash、apt、systemd、基础网络状态。
@@ -33,6 +39,7 @@ sudo bash dist/yatta.sh
 go run ./cmd/yatta validate
 go run ./cmd/yatta list-modules
 go run ./cmd/yatta build
+go run ./cmd/yatta --version
 ```
 
 `dist/yatta.sh` 是构建产物，不应手写修改。源码入口包括：
@@ -41,6 +48,8 @@ go run ./cmd/yatta build
 - `runtime/`：会被拼接进最终脚本的 Bash 标准库。
 - `internal/`：Go 构建器、模块读取、locale 和校验逻辑。
 - `locales/`：脚本文案源文件。
+
+模块编排使用 `stage + requires + before + after`，旧 `order` 字段仅作为兼容和同阶段辅助排序。需要开放端口的模块应登记端口计划，由 UFW 模块统一确认和执行。
 
 模块开发规则见 [模块开发手册](docs/module-development.md)。验收流程见 [Smoke Test 与验收说明](docs/smoke-test.md)。项目级开发约束见 [DEVELOPMENT.md](DEVELOPMENT.md)。
 

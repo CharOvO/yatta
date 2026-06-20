@@ -9,7 +9,9 @@
 ```text
 module.yaml
 prompts.sh
+pre_apply.sh（可选）
 apply.sh
+post_apply.sh（可选）
 ```
 
 `module.yaml` 描述模块元数据，`prompts.sh` 负责收集配置和登记计划，`apply.sh` 负责在用户确认后执行系统修改。
@@ -23,8 +25,11 @@ id: hostname
 name: Hostname
 description: Configure system hostname
 default_enabled: true
+stage: system
 order: 110
 requires: []
+before: []
+after: []
 conflicts: []
 supports:
   distros: [ubuntu]
@@ -36,23 +41,29 @@ supports:
 - `name` 是人类可读名称。
 - `description` 描述模块效果。
 - `default_enabled` 决定默认构建是否包含模块。
-- `order` 决定执行顺序。
-- `requires` 声明依赖模块 ID。
+- `stage` 决定模块所属执行阶段，新模块优先使用。
+- `order` 是兼容字段，可用于同阶段内辅助排序。
+- `requires` 声明硬依赖模块 ID。
+- `before` 声明当前模块必须早于哪些模块。
+- `after` 声明当前模块必须晚于哪些模块。
 - `conflicts` 声明冲突模块 ID。
 - `supports.distros` 在 v1 中必须是 `[ubuntu]`。
 
-## order 分段
+## stage 阶段
 
-推荐使用以下分段，方便后续模块插入：
+推荐使用以下阶段，方便后续模块插入：
 
-- `0-99`：前置检查与环境摘要，例如 `system-check`。
-- `100-199`：本机基础设置，例如 hostname、timezone、user。
-- `200-299`：基础软件包与包管理准备。
-- `300-599`：服务类模块预留。
-- `600-799`：远程访问和安全加固预留。
-- `900-999`：防火墙和最终网络收尾，例如 `ufw`。
+- `preflight`：前置检查与环境摘要，例如 `system-check`。
+- `system`：主机名、时区、swap 等本机基础设置。
+- `account`：用户、sudo、SSH 公钥、无用账户清理。
+- `packages`：apt update、基础包、包管理准备。
+- `remote-access`：sshd 配置。
+- `services`：Docker、Node.js、Python、Go、Nginx 等服务或运行时。
+- `security`：Fail2Ban、安全巡检等。
+- `firewall`：UFW 与最终端口策略。
+- `post`：apt upgrade、收尾摘要、重启提醒。
 
-防火墙类模块应靠后，避免早于 SSH 等远程访问模块执行。
+构建器会先按固定 stage 顺序分组，再根据 `requires`、`before`、`after` 做拓扑排序。循环依赖、缺失目标和自引用会由 `yatta validate` 报错。
 
 ## prompt/apply 边界
 
@@ -65,7 +76,7 @@ supports:
 
 `prompts.sh` 禁止修改系统。
 
-`apply.sh` 只能在用户确认完整执行计划后运行。系统修改应优先调用 runtime 或 adapter 函数，例如：
+`pre_apply.sh`、`apply.sh`、`post_apply.sh` 只能在用户确认完整执行计划后运行。系统修改应优先调用 runtime 或 adapter 函数，例如：
 
 - `yatta_set_hostname`
 - `yatta_set_timezone`
@@ -74,6 +85,16 @@ supports:
 - `yatta_ensure_package_installed`
 - `yatta_ufw_allow_port`
 - `yatta_add_sudo_user`
+
+## 端口计划
+
+需要开放端口的模块应调用 runtime 统一登记端口需求：
+
+```bash
+yatta_port_plan_add "module-id" "tcp" "8080" "业务说明"
+```
+
+UFW 模块会统一展示、确认并放行端口计划。其他模块不应直接散落 UFW 命令。
 
 ## 构建与校验
 
