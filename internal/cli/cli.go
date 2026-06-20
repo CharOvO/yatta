@@ -11,6 +11,7 @@ import (
 	"github.com/CharOvO/yatta/internal/builder"
 	"github.com/CharOvO/yatta/internal/module"
 	"github.com/CharOvO/yatta/internal/validate"
+	"github.com/CharOvO/yatta/internal/version"
 )
 
 const (
@@ -28,6 +29,9 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	}
 
 	command := args[0]
+	if isVersion(command) {
+		return runVersion(stdout, stderr)
+	}
 	if len(args) > 1 {
 		fmt.Fprintf(stderr, "ERROR: %s does not accept arguments\n", command)
 		return ExitUsage
@@ -46,6 +50,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return runListModules(root, stdout, stderr)
 	case "build":
 		return runBuild(root, stdout, stderr)
+	case "version":
+		return runVersion(stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "ERROR: unknown command %q\n", command)
 		return ExitUsage
@@ -56,20 +62,43 @@ func isHelp(args []string) bool {
 	return len(args) == 1 && (args[0] == "-h" || args[0] == "--help")
 }
 
+func isVersion(arg string) bool {
+	return arg == "-v" || arg == "--version"
+}
+
 func writeHelp(w io.Writer) {
 	fmt.Fprint(w, `Yatta server init builder
 
 Usage:
   yatta
+  yatta -v
+  yatta --version
+  yatta version
   yatta validate
   yatta list-modules
   yatta build
 
 Commands:
+  version       Print Yatta version
   validate      Check project structure, modules, runtime, and locale
   list-modules  List modules in execution order
   build         Generate dist/yatta.sh
 `)
+}
+
+func runVersion(stdout, stderr io.Writer) int {
+	root, err := os.Getwd()
+	if err != nil {
+		fmt.Fprintf(stderr, "ERROR: cannot determine current directory: %v\n", err)
+		return ExitUsage
+	}
+	value, err := version.Read(root)
+	if err != nil {
+		fmt.Fprintf(stderr, "ERROR: %v\n", err)
+		return ExitUsage
+	}
+	fmt.Fprintf(stdout, "Yatta %s\n", value)
+	return ExitOK
 }
 
 func runValidate(root string, stdout, stderr io.Writer) int {
@@ -91,9 +120,10 @@ func runListModules(root string, stdout, stderr io.Writer) int {
 		return ExitUsage
 	}
 	writer := tabwriter.NewWriter(stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(writer, "ORDER\tID\tNAME\tENABLED\tDISTROS")
+	fmt.Fprintln(writer, "STAGE\tORDER\tID\tNAME\tENABLED\tDISTROS")
 	for _, mod := range modules {
-		fmt.Fprintf(writer, "%d\t%s\t%s\t%t\t%s\n",
+		fmt.Fprintf(writer, "%s\t%d\t%s\t%s\t%t\t%s\n",
+			module.StageName(mod.Metadata),
 			mod.Metadata.Order,
 			mod.Metadata.ID,
 			mod.Metadata.Name,

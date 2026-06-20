@@ -11,6 +11,7 @@ import (
 	"github.com/CharOvO/yatta/internal/locale"
 	"github.com/CharOvO/yatta/internal/module"
 	"github.com/CharOvO/yatta/internal/validate"
+	"github.com/CharOvO/yatta/internal/version"
 )
 
 // 这里的 builder 包负责把已校验的 Yatta 源文件合成为普通用户运行的
@@ -34,6 +35,10 @@ func Build(root string) (Result, validate.Report, error) {
 	if _, err := locale.LoadZhCN(root); err != nil {
 		return Result{}, report, err
 	}
+	versionValue, err := version.Read(root)
+	if err != nil {
+		return Result{}, report, err
+	}
 	runtimeFiles, err := loadRuntimeFiles(root)
 	if err != nil {
 		return Result{}, report, err
@@ -42,6 +47,8 @@ func Build(root string) (Result, validate.Report, error) {
 	var out bytes.Buffer
 	out.WriteString("#!/usr/bin/env bash\n")
 	out.WriteString("# 此文件由 yatta build 生成，请勿手写修改。\n")
+	fmt.Fprintf(&out, "# Yatta version: %s\n", versionValue)
+	fmt.Fprintf(&out, "YATTA_VERSION=%s\n", shellQuote(versionValue))
 	out.WriteString("\n")
 	for _, path := range runtimeFiles {
 		content, err := os.ReadFile(path)
@@ -60,7 +67,13 @@ func Build(root string) (Result, validate.Report, error) {
 		if err := writeModuleWrapper(&out, mod, "prompt", mod.PromptsPath); err != nil {
 			return Result{}, report, err
 		}
+		if err := writeOptionalModuleWrapper(&out, mod, "pre_apply", mod.PreApplyPath); err != nil {
+			return Result{}, report, err
+		}
 		if err := writeModuleWrapper(&out, mod, "apply", mod.ApplyPath); err != nil {
+			return Result{}, report, err
+		}
+		if err := writeOptionalModuleWrapper(&out, mod, "post_apply", mod.PostApplyPath); err != nil {
 			return Result{}, report, err
 		}
 	}
@@ -153,17 +166,32 @@ func writeModuleWrapper(out *bytes.Buffer, mod module.Module, phase, path string
 	return nil
 }
 
+func writeOptionalModuleWrapper(out *bytes.Buffer, mod module.Module, phase, path string) error {
+	if _, err := os.Stat(path); err != nil {
+		if os.IsNotExist(err) {
+			fmt.Fprintf(out, "yatta_module_%s_%s() {\n", module.FunctionID(mod.Metadata.ID), phase)
+			out.WriteString("  return 0\n")
+			out.WriteString("}\n\n")
+			return nil
+		}
+		return err
+	}
+	return writeModuleWrapper(out, mod, phase, path)
+}
+
 func writeModuleRegistry(out *bytes.Buffer, modules []module.Module) {
 	out.WriteString("yatta_register_generated_modules() {\n")
 	for _, mod := range modules {
 		fnID := module.FunctionID(mod.Metadata.ID)
 		fmt.Fprintf(
 			out,
-			"  yatta_module_register %s %s %s %s\n",
+			"  yatta_module_register %s %s %s %s %s %s\n",
 			shellQuote(mod.Metadata.ID),
 			shellQuote(mod.Metadata.Name),
 			shellQuote("yatta_module_"+fnID+"_prompt"),
+			shellQuote("yatta_module_"+fnID+"_pre_apply"),
 			shellQuote("yatta_module_"+fnID+"_apply"),
+			shellQuote("yatta_module_"+fnID+"_post_apply"),
 		)
 	}
 	out.WriteString("}\n\n")

@@ -33,6 +33,21 @@ func TestRunUnknownCommand(t *testing.T) {
 	}
 }
 
+func TestRunVersion(t *testing.T) {
+	withWorkingDir(t, filepath.Join("..", "validate", "testdata", "valid"), func() {
+		for _, args := range [][]string{{"-v"}, {"--version"}, {"version"}} {
+			var stdout, stderr bytes.Buffer
+			code := Run(args, &stdout, &stderr)
+			if code != ExitOK {
+				t.Fatalf("version args %v exit = %d stderr=%q", args, code, stderr.String())
+			}
+			if !strings.Contains(stdout.String(), "Yatta 9.9.9-test") {
+				t.Fatalf("version output missing value: %q", stdout.String())
+			}
+		}
+	})
+}
+
 func TestRunValidateAndListModules(t *testing.T) {
 	withWorkingDir(t, filepath.Join("..", "validate", "testdata", "valid"), func() {
 		var stdout, stderr bytes.Buffer
@@ -50,7 +65,7 @@ func TestRunValidateAndListModules(t *testing.T) {
 		if code != ExitOK {
 			t.Fatalf("list-modules exit = %d stderr=%q", code, stderr.String())
 		}
-		if !strings.Contains(stdout.String(), "ORDER") || !strings.Contains(stdout.String(), "20") || !strings.Contains(stdout.String(), "alpha") {
+		if !strings.Contains(stdout.String(), "STAGE") || !strings.Contains(stdout.String(), "system") || !strings.Contains(stdout.String(), "alpha") {
 			t.Fatalf("list output missing expected table: %q", stdout.String())
 		}
 	})
