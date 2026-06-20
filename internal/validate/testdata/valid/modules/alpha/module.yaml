@@ -2,6 +2,9 @@ id: alpha
 name: Alpha
 description: Alpha fixture module
 default_enabled: true
+runtime_default: true
+risk: low
+group: fixture
 stage: system
 order: 20
 requires: []

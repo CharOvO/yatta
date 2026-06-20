@@ -35,8 +35,10 @@ func TestBuildGeneratesScript(t *testing.T) {
 		"yatta_module_alpha_pre_apply()",
 		"yatta_module_alpha_apply()",
 		"yatta_module_alpha_post_apply()",
+		"yatta_module_beta_prompt()",
 		"yatta_register_generated_modules()",
-		"yatta_module_register 'alpha' 'Alpha' 'yatta_module_alpha_prompt' 'yatta_module_alpha_pre_apply' 'yatta_module_alpha_apply' 'yatta_module_alpha_post_apply'",
+		"yatta_module_register 'alpha' 'Alpha' 'system' 'fixture' 'low' true false 'yatta_module_alpha_prompt' 'yatta_module_alpha_pre_apply' 'yatta_module_alpha_apply' 'yatta_module_alpha_post_apply'",
+		"yatta_module_register 'beta' 'Beta' 'system' 'fixture' 'medium' false false 'yatta_module_beta_prompt' 'yatta_module_beta_pre_apply' 'yatta_module_beta_apply' 'yatta_module_beta_post_apply'",
 		"yatta_main \"$@\"",
 	} {
 		if !strings.Contains(text, want) {

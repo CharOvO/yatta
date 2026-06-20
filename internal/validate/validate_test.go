@@ -108,11 +108,12 @@ func TestRunValidationErrors(t *testing.T) {
 			want: `module "alpha" cannot require itself`,
 		},
 		{
-			name: "enabled depends on disabled",
+			name: "profile misses required dependency",
 			mutate: func(t *testing.T, root string) {
 				replaceFile(t, root, "modules/alpha/module.yaml", "requires: []", "requires: [beta]")
+				replaceFile(t, root, "yatta.build.yaml", "exclude: []", "exclude: [beta]")
 			},
-			want: `default-enabled module "alpha" requires disabled module "beta"`,
+			want: `profile "basic" selects module "alpha" but misses required module "beta"`,
 		},
 		{
 			name: "missing conflict",
@@ -129,12 +130,11 @@ func TestRunValidationErrors(t *testing.T) {
 			want: `module "alpha" cannot conflict with itself`,
 		},
 		{
-			name: "default conflict",
+			name: "profile conflict",
 			mutate: func(t *testing.T, root string) {
-				replaceFile(t, root, "modules/beta/module.yaml", "default_enabled: false", "default_enabled: true")
 				replaceFile(t, root, "modules/alpha/module.yaml", "conflicts: []", "conflicts: [beta]")
 			},
-			want: `default-enabled module "alpha" conflicts with default-enabled module "beta"`,
+			want: `profile "basic" selects conflicting modules "alpha" and "beta"`,
 		},
 		{
 			name: "invalid distro",
@@ -149,6 +149,27 @@ func TestRunValidationErrors(t *testing.T) {
 				replaceFile(t, root, "modules/alpha/module.yaml", "requires: []", "requires: [beta, beta]")
 			},
 			want: `field requires contains duplicate value "beta"`,
+		},
+		{
+			name: "missing build config",
+			mutate: func(t *testing.T, root string) {
+				removeFile(t, root, "yatta.build.yaml")
+			},
+			want: "yatta.build.yaml: required file is missing",
+		},
+		{
+			name: "profile includes missing module",
+			mutate: func(t *testing.T, root string) {
+				replaceFile(t, root, "yatta.build.yaml", `include: ["*"]`, "include: [ghost]")
+			},
+			want: `profile "basic" includes missing module "ghost"`,
+		},
+		{
+			name: "profile duplicate module",
+			mutate: func(t *testing.T, root string) {
+				replaceFile(t, root, "yatta.build.yaml", `include: ["*"]`, "include: [alpha, alpha]")
+			},
+			want: `field include contains duplicate value "alpha"`,
 		},
 		{
 			name: "unknown stage",
@@ -226,6 +247,9 @@ func baseModuleYAML(id, name, description, enabled, order, requires, conflicts, 
 		b.WriteString("description: " + description + "\n")
 	}
 	b.WriteString("default_enabled: " + enabled + "\n")
+	b.WriteString("runtime_default: true\n")
+	b.WriteString("risk: low\n")
+	b.WriteString("group: fixture\n")
 	b.WriteString("order: " + order + "\n")
 	b.WriteString("requires: " + requires + "\n")
 	b.WriteString("conflicts: " + conflicts + "\n")

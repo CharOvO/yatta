@@ -67,6 +67,7 @@ var areaOrder = map[string]int{
 	"locale":    2,
 	"modules":   3,
 	"relations": 4,
+	"build":     5,
 }
 
 func sortDiagnostics(diagnostics []Diagnostic) {

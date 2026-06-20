@@ -2,6 +2,10 @@ id: system-check
 name: System Check
 description: Show a basic environment check placeholder
 default_enabled: true
+runtime_default: true
+risk: low
+group: preflight
+locked: true
 stage: preflight
 order: 10
 requires: []

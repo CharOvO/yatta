@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/CharOvO/yatta/internal/buildconfig"
 	"github.com/CharOvO/yatta/internal/locale"
 	"github.com/CharOvO/yatta/internal/module"
 	"github.com/CharOvO/yatta/internal/validate"
@@ -28,7 +29,19 @@ func Build(root string) (Result, validate.Report, error) {
 		return Result{}, report, nil
 	}
 
-	modules, err := module.LoadEnabled(root)
+	allModules, err := module.LoadAll(root)
+	if err != nil {
+		return Result{}, report, err
+	}
+	config, err := buildconfig.Load(root)
+	if err != nil {
+		return Result{}, report, err
+	}
+	selectedIDs, err := buildconfig.ResolveDefault(config, moduleIDs(allModules))
+	if err != nil {
+		return Result{}, report, err
+	}
+	modules, err := module.FilterByIDs(allModules, selectedIDs)
 	if err != nil {
 		return Result{}, report, err
 	}
@@ -185,9 +198,14 @@ func writeModuleRegistry(out *bytes.Buffer, modules []module.Module) {
 		fnID := module.FunctionID(mod.Metadata.ID)
 		fmt.Fprintf(
 			out,
-			"  yatta_module_register %s %s %s %s %s %s\n",
+			"  yatta_module_register %s %s %s %s %s %s %s %s %s %s %s\n",
 			shellQuote(mod.Metadata.ID),
 			shellQuote(mod.Metadata.Name),
+			shellQuote(module.StageName(mod.Metadata)),
+			shellQuote(mod.Metadata.Group),
+			shellQuote(mod.Metadata.Risk),
+			shellBool(mod.Metadata.RuntimeDefault),
+			shellBool(mod.Metadata.Locked),
 			shellQuote("yatta_module_"+fnID+"_prompt"),
 			shellQuote("yatta_module_"+fnID+"_pre_apply"),
 			shellQuote("yatta_module_"+fnID+"_apply"),
@@ -197,6 +215,22 @@ func writeModuleRegistry(out *bytes.Buffer, modules []module.Module) {
 	out.WriteString("}\n\n")
 }
 
+func moduleIDs(modules []module.Module) []string {
+	ids := make([]string, 0, len(modules))
+	for _, mod := range modules {
+		ids = append(ids, mod.Metadata.ID)
+	}
+	sort.Strings(ids)
+	return ids
+}
+
 func shellQuote(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'"
+}
+
+func shellBool(value bool) string {
+	if value {
+		return "true"
+	}
+	return "false"
 }

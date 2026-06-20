@@ -2,6 +2,9 @@ id: hostname
 name: Hostname
 description: Configure system hostname
 default_enabled: true
+runtime_default: true
+risk: low
+group: system-basics
 stage: system
 order: 110
 requires: []

@@ -2,6 +2,9 @@ id: user
 name: User
 description: Create a non-root sudo user
 default_enabled: true
+runtime_default: true
+risk: medium
+group: account
 stage: account
 order: 130
 requires: []

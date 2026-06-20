@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/CharOvO/yatta/internal/buildconfig"
 	"github.com/CharOvO/yatta/internal/module"
 	"github.com/CharOvO/yatta/internal/version"
 	"gopkg.in/yaml.v3"
@@ -25,6 +26,10 @@ type moduleInfo struct {
 	stage          string
 	order          int
 	defaultEnabled bool
+	runtimeDefault bool
+	risk           string
+	group          string
+	locked         bool
 	requires       []string
 	before         []string
 	after          []string
@@ -43,6 +48,7 @@ func Run(root string) Report {
 	checkLocale(root, &report)
 	modules := checkModules(root, &report)
 	checkRelations(modules, &report)
+	checkBuildConfig(root, modules, &report)
 	return report
 }
 
@@ -206,6 +212,10 @@ func checkModule(root, modulePath, dirName string, report *Report) moduleInfo {
 		"name":            true,
 		"description":     true,
 		"default_enabled": true,
+		"runtime_default": true,
+		"risk":            true,
+		"group":           true,
+		"locked":          true,
 		"stage":           true,
 		"order":           true,
 		"requires":        true,
@@ -223,7 +233,11 @@ func checkModule(root, modulePath, dirName string, report *Report) moduleInfo {
 	info.id = requireString(rootMap, "id", relMeta, report)
 	info.name = requireString(rootMap, "name", relMeta, report)
 	_ = requireString(rootMap, "description", relMeta, report)
-	info.defaultEnabled = requireBool(rootMap, "default_enabled", relMeta, report)
+	info.defaultEnabled = optionalBool(rootMap, "default_enabled", relMeta, report)
+	info.runtimeDefault = requireBool(rootMap, "runtime_default", relMeta, report)
+	info.risk = requireRisk(rootMap, relMeta, report)
+	info.group = requireString(rootMap, "group", relMeta, report)
+	info.locked = optionalBool(rootMap, "locked", relMeta, report)
 	info.stage = optionalStage(rootMap, "stage", relMeta, report)
 	info.order = optionalNonNegativeInt(rootMap, "order", relMeta, report)
 	if info.stage == "" {
@@ -264,7 +278,7 @@ func checkRelations(modules []moduleInfo, report *Report) {
 			continue
 		}
 		for _, required := range mod.requires {
-			target, ok := byID[required]
+			_, ok := byID[required]
 			if required == mod.id {
 				report.add(Error, "relations", mod.path, fmt.Sprintf("module %q cannot require itself", mod.id))
 				continue
@@ -273,12 +287,9 @@ func checkRelations(modules []moduleInfo, report *Report) {
 				report.add(Error, "relations", mod.path, fmt.Sprintf("requires missing module %q", required))
 				continue
 			}
-			if mod.defaultEnabled && !target.defaultEnabled {
-				report.add(Error, "relations", mod.path, fmt.Sprintf("default-enabled module %q requires disabled module %q", mod.id, required))
-			}
 		}
 		for _, conflict := range mod.conflicts {
-			target, ok := byID[conflict]
+			_, ok := byID[conflict]
 			if conflict == mod.id {
 				report.add(Error, "relations", mod.path, fmt.Sprintf("module %q cannot conflict with itself", mod.id))
 				continue
@@ -286,9 +297,6 @@ func checkRelations(modules []moduleInfo, report *Report) {
 			if !ok {
 				report.add(Error, "relations", mod.path, fmt.Sprintf("conflicts with missing module %q", conflict))
 				continue
-			}
-			if mod.defaultEnabled && target.defaultEnabled {
-				report.add(Error, "relations", mod.path, fmt.Sprintf("default-enabled module %q conflicts with default-enabled module %q", mod.id, conflict))
 			}
 		}
 		checkOrderingTargets(mod, "before", mod.before, byID, report)
@@ -310,6 +318,152 @@ func checkOrderingTargets(mod moduleInfo, field string, values []string, byID ma
 			report.add(Error, "relations", mod.path, fmt.Sprintf("%s references missing module %q", field, targetID))
 		}
 	}
+}
+
+func checkBuildConfig(root string, modules []moduleInfo, report *Report) {
+	rel := buildconfig.FileName
+	content, ok := checkReadableFile(filepath.Join(root, rel), "build", rel, report)
+	if !ok {
+		return
+	}
+
+	var node yaml.Node
+	if err := yaml.Unmarshal(content, &node); err != nil {
+		report.add(Error, "build", rel, fmt.Sprintf("invalid YAML: %v", err))
+		return
+	}
+	if len(node.Content) == 0 || node.Content[0].Kind != yaml.MappingNode {
+		report.add(Error, "build", rel, "must be a YAML mapping")
+		return
+	}
+	rootMap := mapping(node.Content[0])
+	for key := range rootMap {
+		if key != "default_profile" && key != "profiles" {
+			report.add(Warn, "build", rel, fmt.Sprintf("unknown field %q", key))
+		}
+	}
+
+	defaultProfile := requireBuildString(rootMap, "default_profile", rel, report)
+	profilesNode, ok := rootMap["profiles"]
+	if !ok {
+		report.add(Error, "build", rel, "missing required field: profiles")
+		return
+	}
+	if profilesNode.Kind != yaml.MappingNode {
+		report.add(Error, "build", rel, "field profiles must be a mapping")
+		return
+	}
+	profileNames := map[string]bool{}
+	for i := 0; i+1 < len(profilesNode.Content); i += 2 {
+		nameNode := profilesNode.Content[i]
+		profileNode := profilesNode.Content[i+1]
+		if nameNode.Kind != yaml.ScalarNode || nameNode.Tag != "!!str" || strings.TrimSpace(nameNode.Value) == "" {
+			report.add(Error, "build", rel, "profile names must be non-empty strings")
+			continue
+		}
+		name := nameNode.Value
+		if profileNames[name] {
+			report.add(Error, "build", rel, fmt.Sprintf("duplicate profile %q", name))
+			continue
+		}
+		profileNames[name] = true
+		checkProfileNode(name, profileNode, rel, report)
+	}
+	if defaultProfile != "" && !profileNames[defaultProfile] {
+		report.add(Error, "build", rel, fmt.Sprintf("default_profile %q is not defined", defaultProfile))
+	}
+
+	config, err := buildconfig.Load(root)
+	if err != nil {
+		report.add(Error, "build", rel, err.Error())
+		return
+	}
+	allIDs := moduleIDs(modules)
+	for profileName := range config.Profiles {
+		selectedIDs, err := buildconfig.Resolve(config, profileName, allIDs)
+		if err != nil {
+			report.add(Error, "build", rel, err.Error())
+			continue
+		}
+		checkProfileRelations(profileName, selectedIDs, modules, report)
+	}
+}
+
+func checkProfileNode(name string, node *yaml.Node, path string, report *Report) {
+	if node.Kind != yaml.MappingNode {
+		report.add(Error, "build", path, fmt.Sprintf("profile %q must be a mapping", name))
+		return
+	}
+	fields := mapping(node)
+	for key := range fields {
+		if key != "include" && key != "exclude" {
+			report.add(Warn, "build", path, fmt.Sprintf("profile %q has unknown field %q", name, key))
+		}
+	}
+	if _, ok := fields["include"]; !ok {
+		report.add(Error, "build", path, fmt.Sprintf("profile %q missing required field: include", name))
+	} else {
+		_ = requireBuildStringArray(fields, "include", path, report)
+	}
+	if _, ok := fields["exclude"]; ok {
+		_ = requireBuildStringArray(fields, "exclude", path, report)
+	}
+}
+
+func checkProfileRelations(profileName string, selectedIDs []string, modules []moduleInfo, report *Report) {
+	byID := map[string]moduleInfo{}
+	for _, mod := range modules {
+		byID[mod.id] = mod
+	}
+	selected := map[string]bool{}
+	var selectedMetadata []module.Metadata
+	for _, id := range selectedIDs {
+		selected[id] = true
+		mod := byID[id]
+		selectedMetadata = append(selectedMetadata, module.Metadata{
+			ID:        mod.id,
+			Stage:     mod.stage,
+			Order:     mod.order,
+			Requires:  mod.requires,
+			Before:    mod.before,
+			After:     mod.after,
+			Conflicts: mod.conflicts,
+		})
+	}
+	for _, mod := range selectedMetadata {
+		for _, required := range mod.Requires {
+			if !selected[required] {
+				report.add(Error, "build", buildconfig.FileName, fmt.Sprintf("profile %q selects module %q but misses required module %q", profileName, mod.ID, required))
+			}
+		}
+		for _, before := range mod.Before {
+			if !selected[before] {
+				report.add(Error, "build", buildconfig.FileName, fmt.Sprintf("profile %q selects module %q but misses before target %q", profileName, mod.ID, before))
+			}
+		}
+		for _, after := range mod.After {
+			if !selected[after] {
+				report.add(Error, "build", buildconfig.FileName, fmt.Sprintf("profile %q selects module %q but misses after target %q", profileName, mod.ID, after))
+			}
+		}
+		for _, conflict := range mod.Conflicts {
+			if selected[conflict] {
+				report.add(Error, "build", buildconfig.FileName, fmt.Sprintf("profile %q selects conflicting modules %q and %q", profileName, mod.ID, conflict))
+			}
+		}
+	}
+	if _, err := module.OrderedIDs(selectedMetadata); err != nil {
+		report.add(Error, "build", buildconfig.FileName, fmt.Sprintf("profile %q: %v", profileName, err))
+	}
+}
+
+func moduleIDs(modules []moduleInfo) []string {
+	ids := make([]string, 0, len(modules))
+	for _, mod := range modules {
+		ids = append(ids, mod.id)
+	}
+	sort.Strings(ids)
+	return ids
 }
 
 func toMetadata(modules []moduleInfo) []module.Metadata {
@@ -400,6 +554,39 @@ func requireBool(fields map[string]*yaml.Node, key, path string, report *Report)
 	return node.Value == "true"
 }
 
+func optionalBool(fields map[string]*yaml.Node, key, path string, report *Report) bool {
+	if _, ok := fields[key]; !ok {
+		return false
+	}
+	return requireBool(fields, key, path, report)
+}
+
+func requireRisk(fields map[string]*yaml.Node, path string, report *Report) string {
+	value := requireString(fields, "risk", path, report)
+	switch value {
+	case "low", "medium", "high":
+		return value
+	case "":
+		return ""
+	default:
+		report.add(Error, "modules", path, fmt.Sprintf("field risk has unknown value %q", value))
+		return value
+	}
+}
+
+func requireBuildString(fields map[string]*yaml.Node, key, path string, report *Report) string {
+	node, ok := fields[key]
+	if !ok {
+		report.add(Error, "build", path, fmt.Sprintf("missing required field: %s", key))
+		return ""
+	}
+	if node.Kind != yaml.ScalarNode || node.Tag != "!!str" || strings.TrimSpace(node.Value) == "" {
+		report.add(Error, "build", path, fmt.Sprintf("field %s must be a non-empty string", key))
+		return ""
+	}
+	return node.Value
+}
+
 func requireNonNegativeInt(fields map[string]*yaml.Node, key, path string, report *Report) int {
 	node, ok := fields[key]
 	if !ok {
@@ -459,6 +646,37 @@ func requireStringArray(fields map[string]*yaml.Node, key, path string, report *
 		}
 		if seen[item.Value] {
 			report.add(Error, "modules", path, fmt.Sprintf("field %s contains duplicate value %q", key, item.Value))
+			continue
+		}
+		seen[item.Value] = true
+		values = append(values, item.Value)
+	}
+	return values
+}
+
+func requireBuildStringArray(fields map[string]*yaml.Node, key, path string, report *Report) []string {
+	node, ok := fields[key]
+	if !ok {
+		report.add(Error, "build", path, fmt.Sprintf("missing required field: %s", key))
+		return nil
+	}
+	if node.Kind != yaml.SequenceNode {
+		report.add(Error, "build", path, fmt.Sprintf("field %s must be an array of non-empty strings", key))
+		return nil
+	}
+	seen := map[string]bool{}
+	var values []string
+	for _, item := range node.Content {
+		if item.Kind != yaml.ScalarNode || item.Tag != "!!str" || strings.TrimSpace(item.Value) == "" {
+			report.add(Error, "build", path, fmt.Sprintf("field %s must contain only non-empty strings", key))
+			continue
+		}
+		if item.Value == "*" && key != "include" {
+			report.add(Error, "build", path, "wildcard * is only allowed in include")
+			continue
+		}
+		if seen[item.Value] {
+			report.add(Error, "build", path, fmt.Sprintf("field %s contains duplicate value %q", key, item.Value))
 			continue
 		}
 		seen[item.Value] = true

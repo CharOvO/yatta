@@ -2,6 +2,9 @@ id: beta
 name: Beta
 description: Beta fixture module
 default_enabled: false
+runtime_default: false
+risk: medium
+group: fixture
 stage: system
 order: 20
 requires: []

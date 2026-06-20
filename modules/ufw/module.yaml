@@ -2,6 +2,9 @@ id: ufw
 name: UFW
 description: Configure firewall
 default_enabled: true
+runtime_default: false
+risk: high
+group: firewall
 stage: firewall
 order: 900
 requires: []

@@ -22,6 +22,10 @@ type Metadata struct {
 	Name           string   `yaml:"name"`
 	Description    string   `yaml:"description"`
 	DefaultEnabled bool     `yaml:"default_enabled"`
+	RuntimeDefault bool     `yaml:"runtime_default"`
+	Risk           string   `yaml:"risk"`
+	Group          string   `yaml:"group"`
+	Locked         bool     `yaml:"locked"`
 	Stage          string   `yaml:"stage"`
 	Order          int      `yaml:"order"`
 	Requires       []string `yaml:"requires"`
@@ -88,6 +92,29 @@ func LoadEnabled(root string) ([]Module, error) {
 		}
 	}
 	return enabled, nil
+}
+
+func FilterByIDs(modules []Module, ids []string) ([]Module, error) {
+	selected := map[string]bool{}
+	for _, id := range ids {
+		selected[id] = true
+	}
+	var filtered []Module
+	for _, mod := range modules {
+		if selected[mod.Metadata.ID] {
+			filtered = append(filtered, mod)
+			delete(selected, mod.Metadata.ID)
+		}
+	}
+	if len(selected) > 0 {
+		var missing []string
+		for id := range selected {
+			missing = append(missing, id)
+		}
+		sort.Strings(missing)
+		return nil, fmt.Errorf("selected modules are missing: %s", strings.Join(missing, ", "))
+	}
+	return filtered, nil
 }
 
 func LoadMetadata(path string) (Metadata, error) {

@@ -120,14 +120,17 @@ func runListModules(root string, stdout, stderr io.Writer) int {
 		return ExitUsage
 	}
 	writer := tabwriter.NewWriter(stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(writer, "STAGE\tORDER\tID\tNAME\tENABLED\tDISTROS")
+	fmt.Fprintln(writer, "STAGE\tORDER\tID\tNAME\tRUNTIME_DEFAULT\tRISK\tGROUP\tLOCKED\tDISTROS")
 	for _, mod := range modules {
-		fmt.Fprintf(writer, "%s\t%d\t%s\t%s\t%t\t%s\n",
+		fmt.Fprintf(writer, "%s\t%d\t%s\t%s\t%t\t%s\t%s\t%t\t%s\n",
 			module.StageName(mod.Metadata),
 			mod.Metadata.Order,
 			mod.Metadata.ID,
 			mod.Metadata.Name,
-			mod.Metadata.DefaultEnabled,
+			mod.Metadata.RuntimeDefault,
+			mod.Metadata.Risk,
+			mod.Metadata.Group,
+			mod.Metadata.Locked,
 			strings.Join(mod.Metadata.Supports.Distros, ","),
 		)
 	}

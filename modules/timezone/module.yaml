@@ -2,6 +2,9 @@ id: timezone
 name: Timezone
 description: Configure system timezone
 default_enabled: true
+runtime_default: true
+risk: low
+group: system-basics
 stage: system
 order: 120
 requires: []

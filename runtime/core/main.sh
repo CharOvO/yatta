@@ -8,6 +8,10 @@ yatta_run_prompts() {
     id="${YATTA_MODULE_IDS[$index]}"
     name="${YATTA_MODULE_NAMES[$index]}"
     prompt_fn="${YATTA_MODULE_PROMPT_FNS[$index]}"
+    if ! yatta_module_is_enabled "$index"; then
+      yatta_log_info "跳过未启用模块：${name}"
+      continue
+    fi
     yatta_ui_section "收集配置：${name}"
     if ! yatta_call_function "$prompt_fn"; then
       yatta_log_error "模块 ${id} 的询问阶段失败。"
@@ -24,6 +28,10 @@ yatta_run_applies() {
   for index in "${!YATTA_MODULE_IDS[@]}"; do
     id="${YATTA_MODULE_IDS[$index]}"
     name="${YATTA_MODULE_NAMES[$index]}"
+    if ! yatta_module_is_enabled "$index"; then
+      yatta_log_info "跳过未启用模块：${name}"
+      continue
+    fi
     case "$phase" in
       pre) apply_fn="${YATTA_MODULE_PRE_APPLY_FNS[$index]}" ;;
       post) apply_fn="${YATTA_MODULE_POST_APPLY_FNS[$index]}" ;;
@@ -64,6 +72,7 @@ yatta_main() {
     return 1
   fi
   yatta_register_generated_modules
+  yatta_select_runtime_modules
 
   yatta_ui_section "配置收集"
   yatta_run_prompts || return 1
