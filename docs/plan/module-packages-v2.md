@@ -29,13 +29,13 @@
 - `modules/packages/post_apply.sh` 负责用户确认后的 `apt upgrade`。
 - `runtime/adapter/ubuntu.sh` 负责封装 apt 命令。
 
-拆分 pre/apply/post 可以让 apt update 作为前置准备执行，也能把风险更高的 upgrade 放到所有模块之后。
+拆分 pre/apply/post 可以让 apt update 作为前置准备执行，也能把风险更高的 upgrade 放到常规模块收尾阶段；远程访问类最终敏感操作仍可以排在它之后。
 
 ## 大致流程
 
 1. prompt 阶段检测基础包缺失情况。
 2. 缺失时询问是否安装，确认后登记安装计划和 apt update 需求。
-3. 询问是否在最后执行 apt upgrade，默认否。
+3. 询问是否在常规模块完成后执行 apt upgrade，默认否。
 4. pre apply 阶段按需执行 apt update。
 5. apply 阶段重新检测缺失包并安装。
 6. post apply 阶段仅在用户明确确认时执行 apt upgrade。

@@ -51,6 +51,26 @@ yatta_run_applies() {
   done
 }
 
+yatta_run_final_tasks() {
+  local index name task_fn
+  if [[ "${#YATTA_FINAL_TASK_FNS[@]}" -eq 0 ]]; then
+    return 0
+  fi
+
+  yatta_ui_section "最终敏感操作"
+  yatta_log_warn "以下操作会在所有模块和收尾任务完成后执行，可能影响当前远程连接。"
+  for index in "${!YATTA_FINAL_TASK_FNS[@]}"; do
+    name="${YATTA_FINAL_TASK_NAMES[$index]}"
+    task_fn="${YATTA_FINAL_TASK_FNS[$index]}"
+    yatta_ui_spinner "执行最终操作：${name}" yatta_call_function "$task_fn"
+    if [[ "$?" -ne 0 ]]; then
+      yatta_log_error "最终操作 ${name} 失败，后续任务已停止。"
+      return 1
+    fi
+    yatta_log_ok "最终操作 ${name} 已完成。"
+  done
+}
+
 yatta_main() {
   local apply_default="n"
   local arg_status
@@ -97,6 +117,10 @@ yatta_main() {
   fi
   if ! yatta_run_applies "post" "收尾执行"; then
     yatta_log_error "Yatta 收尾执行失败，请根据上方日志处理后重试。"
+    return 1
+  fi
+  if ! yatta_run_final_tasks; then
+    yatta_log_error "Yatta 最终敏感操作失败，请根据上方日志处理后重试。"
     return 1
   fi
 

@@ -54,12 +54,15 @@ if yatta_ui_confirm "是否创建或确认一个非 root sudo 用户？" "y"; th
 
   if [[ "${#candidate_users[@]}" -gt 0 ]]; then
     yatta_log_info "可检查的普通用户：${candidate_users[*]}"
-    if yatta_ui_confirm "是否逐个确认删除多余普通用户？默认保留 home。" "n"; then
-      for candidate_user in "${candidate_users[@]}"; do
-        if yatta_ui_confirm "确认删除用户 ${candidate_user}？" "n"; then
-          YATTA_USER_DELETE_USERS+=("$candidate_user")
+    if yatta_ui_confirm "是否选择要删除的多余普通用户？默认保留 home。" "n"; then
+      while IFS= read -r selected_user_index; do
+        if [[ "$selected_user_index" =~ ^[0-9]+$ ]] && ((selected_user_index >= 0 && selected_user_index < ${#candidate_users[@]})); then
+          YATTA_USER_DELETE_USERS+=("${candidate_users[$selected_user_index]}")
         fi
-      done
+      done < <(yatta_ui_multi_select "选择要删除的普通用户" "" "" "${candidate_users[@]}")
+      if [[ "${#YATTA_USER_DELETE_USERS[@]}" -eq 0 ]]; then
+        yatta_log_info "没有选择要删除的普通用户。"
+      fi
     fi
   fi
 fi

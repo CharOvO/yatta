@@ -212,6 +212,152 @@ yatta_ui_select_arrow() {
   done
 }
 
+yatta_ui_multi_select() {
+  local prompt="$1"
+  local selected_csv="${2:-}"
+  local locked_csv="${3:-}"
+  shift 3
+  if yatta_has_tty; then
+    yatta_ui_multi_select_arrow "$prompt" "$selected_csv" "$locked_csv" "$@"
+  else
+    yatta_ui_multi_select_numbered "$prompt" "$selected_csv" "$locked_csv" "$@"
+  fi
+}
+
+yatta_ui_multi_select_flags_init() {
+  local selected_csv="$1"
+  local locked_csv="$2"
+  local count="$3"
+  local item index
+  YATTA_UI_MULTI_SELECTED=()
+  YATTA_UI_MULTI_LOCKED=()
+  for ((index = 0; index < count; index++)); do
+    YATTA_UI_MULTI_SELECTED[$index]="false"
+    YATTA_UI_MULTI_LOCKED[$index]="false"
+  done
+  IFS=',' read -ra YATTA_UI_MULTI_SELECTED_ITEMS <<<"$selected_csv"
+  for item in "${YATTA_UI_MULTI_SELECTED_ITEMS[@]}"; do
+    item="${item//[[:space:]]/}"
+    [[ "$item" =~ ^[0-9]+$ ]] && ((item >= 0 && item < count)) && YATTA_UI_MULTI_SELECTED[$item]="true"
+  done
+  IFS=',' read -ra YATTA_UI_MULTI_LOCKED_ITEMS <<<"$locked_csv"
+  for item in "${YATTA_UI_MULTI_LOCKED_ITEMS[@]}"; do
+    item="${item//[[:space:]]/}"
+    if [[ "$item" =~ ^[0-9]+$ ]] && ((item >= 0 && item < count)); then
+      YATTA_UI_MULTI_LOCKED[$item]="true"
+      YATTA_UI_MULTI_SELECTED[$item]="true"
+    fi
+  done
+}
+
+yatta_ui_multi_select_emit() {
+  local index
+  for index in "${!YATTA_UI_MULTI_SELECTED[@]}"; do
+    [[ "${YATTA_UI_MULTI_SELECTED[$index]}" == "true" ]] && printf '%s\n' "$index"
+  done
+}
+
+yatta_ui_multi_select_numbered() {
+  local prompt="$1"
+  local selected_csv="${2:-}"
+  local locked_csv="${3:-}"
+  shift 3
+  local options=("$@")
+  local answer item index marker locked_label
+  yatta_ui_multi_select_flags_init "$selected_csv" "$locked_csv" "${#options[@]}"
+  printf '%s\n' "$prompt" >&2
+  for index in "${!options[@]}"; do
+    marker="[ ]"
+    [[ "${YATTA_UI_MULTI_SELECTED[$index]}" == "true" ]] && marker="[x]"
+    locked_label=""
+    [[ "${YATTA_UI_MULTI_LOCKED[$index]}" == "true" ]] && locked_label=" locked"
+    printf '  %d) %s %s%s\n' "$((index + 1))" "$marker" "${options[$index]}" "$locked_label" >&2
+  done
+  printf '%s' "输入要选中的序号，多个序号用逗号分隔；直接回车使用当前选择: " >&2
+  if yatta_has_tty; then
+    IFS= read -r answer </dev/tty || answer=""
+  else
+    IFS= read -r answer || answer=""
+  fi
+  answer="${answer//$'\r'/}"
+  if [[ -n "$answer" ]]; then
+    for index in "${!options[@]}"; do
+      if [[ "${YATTA_UI_MULTI_LOCKED[$index]}" == "true" ]]; then
+        YATTA_UI_MULTI_SELECTED[$index]="true"
+      else
+        YATTA_UI_MULTI_SELECTED[$index]="false"
+      fi
+    done
+    IFS=',' read -ra YATTA_UI_MULTI_ANSWER_ITEMS <<<"$answer"
+    for item in "${YATTA_UI_MULTI_ANSWER_ITEMS[@]}"; do
+      item="${item//[[:space:]]/}"
+      if [[ ! "$item" =~ ^[0-9]+$ ]] || ((item < 1 || item > ${#options[@]})); then
+        yatta_log_warn "忽略无效序号：${item}"
+        continue
+      fi
+      index=$((item - 1))
+      if [[ "${YATTA_UI_MULTI_LOCKED[$index]}" == "true" ]]; then
+        yatta_log_warn "该项目不可取消：${options[$index]}"
+        YATTA_UI_MULTI_SELECTED[$index]="true"
+        continue
+      fi
+      YATTA_UI_MULTI_SELECTED[$index]="true"
+    done
+  fi
+  yatta_ui_multi_select_emit
+}
+
+yatta_ui_multi_select_arrow() {
+  local prompt="$1"
+  local selected_csv="${2:-}"
+  local locked_csv="${3:-}"
+  shift 3
+  local options=("$@")
+  local selected=0
+  local key rest index marker
+  yatta_ui_multi_select_flags_init "$selected_csv" "$locked_csv" "${#options[@]}"
+  printf '%s\n' "$prompt" >/dev/tty
+  printf '%s\n' "↑/↓ 移动，Space 切换，Enter 确认。" >/dev/tty
+  while true; do
+    for index in "${!options[@]}"; do
+      marker="[ ]"
+      [[ "${YATTA_UI_MULTI_SELECTED[$index]}" == "true" ]] && marker="[x]"
+      if [[ "$index" -eq "$selected" ]]; then
+        printf '\r\033[K  %s %s%s %s%s\n' "$YATTA_SYMBOL_ARROW" "$YATTA_COLOR_BOLD" "$marker" "${options[$index]}" "$YATTA_COLOR_RESET" >/dev/tty
+      else
+        printf '\r\033[K    %s %s\n' "$marker" "${options[$index]}" >/dev/tty
+      fi
+    done
+    IFS= read -rsn1 key </dev/tty || {
+      yatta_ui_multi_select_numbered "$prompt" "$selected_csv" "$locked_csv" "${options[@]}"
+      return
+    }
+    case "$key" in
+      "")
+        yatta_ui_multi_select_emit
+        return 0
+        ;;
+      " ")
+        if [[ "${YATTA_UI_MULTI_LOCKED[$selected]}" == "true" ]]; then
+          printf '\a' >/dev/tty
+        elif [[ "${YATTA_UI_MULTI_SELECTED[$selected]}" == "true" ]]; then
+          YATTA_UI_MULTI_SELECTED[$selected]="false"
+        else
+          YATTA_UI_MULTI_SELECTED[$selected]="true"
+        fi
+        ;;
+      $'\033')
+        IFS= read -rsn2 -t 0.1 rest </dev/tty || rest=""
+        case "$rest" in
+          "[A") ((selected > 0)) && selected=$((selected - 1)) ;;
+          "[B") ((selected < ${#options[@]} - 1)) && selected=$((selected + 1)) ;;
+        esac
+        ;;
+    esac
+    printf '\033[%dA' "${#options[@]}" >/dev/tty
+  done
+}
+
 yatta_ui_spinner() {
   local message="$1"
   shift

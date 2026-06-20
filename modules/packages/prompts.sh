@@ -19,10 +19,10 @@ else
   yatta_plan_add "packages" "warn" "跳过基础软件包安装，缺失：${YATTA_PACKAGES_MISSING[*]}"
 fi
 
-if yatta_ui_confirm "是否在脚本全部执行完成后运行 apt upgrade？这可能升级大量系统包。" "n"; then
+if yatta_ui_confirm "是否在常规模块完成后运行 apt upgrade？这可能升级大量系统包。" "n"; then
   YATTA_PACKAGES_APT_UPDATE="1"
   YATTA_PACKAGES_APT_UPGRADE="1"
-  yatta_plan_add "packages" "warn" "将在所有模块完成后执行 apt upgrade 作为最后收尾任务。"
+  yatta_plan_add "packages" "warn" "将在常规模块完成后执行 apt upgrade；远程访问类最终操作会排在它之后。"
 else
   yatta_plan_add "packages" "info" "跳过 apt upgrade 收尾任务。"
 fi

@@ -23,6 +23,9 @@ YATTA_PORT_PLAN_PROTOCOLS=()
 YATTA_PORT_PLAN_PORTS=()
 YATTA_PORT_PLAN_PURPOSES=()
 
+YATTA_FINAL_TASK_NAMES=()
+YATTA_FINAL_TASK_FNS=()
+
 yatta_module_register() {
   YATTA_MODULE_IDS+=("$1")
   YATTA_MODULE_NAMES+=("$2")
@@ -82,59 +85,55 @@ yatta_module_selection_apply_list() {
 }
 
 yatta_module_selection_show() {
-  local index marker locked_label risk_label group_label
+  local index marker locked_label
   printf '%s\n' "本次启用模块：" >&2
-  printf '  %-4s %-4s %-14s %-12s %-8s %s\n' "序号" "启用" "阶段" "分组" "风险" "模块" >&2
   for index in "${!YATTA_MODULE_IDS[@]}"; do
     marker="[ ]"
     yatta_module_is_enabled "$index" && marker="[x]"
     locked_label=""
     [[ "${YATTA_MODULE_LOCKED[$index]}" == "true" ]] && locked_label=" locked"
-    risk_label="${YATTA_MODULE_RISKS[$index]}"
-    group_label="${YATTA_MODULE_GROUPS[$index]}"
-    printf '  %-4d %-4s %-14s %-12s %-8s %s%s\n' \
-      "$((index + 1))" \
+    printf '  %s %d. %s | stage=%s | group=%s | risk=%s%s\n' \
       "$marker" \
-      "${YATTA_MODULE_STAGES[$index]}" \
-      "$group_label" \
-      "$risk_label" \
+      "$((index + 1))" \
       "${YATTA_MODULE_NAMES[$index]}" \
+      "${YATTA_MODULE_STAGES[$index]}" \
+      "${YATTA_MODULE_GROUPS[$index]}" \
+      "${YATTA_MODULE_RISKS[$index]}" \
       "$locked_label" >&2
   done
 }
 
 yatta_module_selection_prompt() {
-  local answer index item
-  local items=()
-  while true; do
-    yatta_module_selection_show
-    printf '%s' "输入要切换启用状态的序号，多个序号用逗号分隔；直接回车继续: " >&2
-    if yatta_has_tty; then
-      IFS= read -r answer </dev/tty || answer=""
-    else
-      IFS= read -r answer || answer=""
+  local index selected_csv locked_csv locked_label chosen_index
+  local options=()
+  local chosen=()
+  selected_csv=""
+  locked_csv=""
+  for index in "${!YATTA_MODULE_IDS[@]}"; do
+    locked_label=""
+    [[ "${YATTA_MODULE_LOCKED[$index]}" == "true" ]] && locked_label=" locked"
+    options+=("$((index + 1)). ${YATTA_MODULE_NAMES[$index]} | stage=${YATTA_MODULE_STAGES[$index]} | group=${YATTA_MODULE_GROUPS[$index]} | risk=${YATTA_MODULE_RISKS[$index]}${locked_label}")
+    if yatta_module_is_enabled "$index"; then
+      selected_csv="${selected_csv:+$selected_csv,}$index"
     fi
-    answer="${answer//$'\r'/}"
-    [[ -z "$answer" ]] && return 0
-    IFS=',' read -ra items <<<"$answer"
-    for item in "${items[@]}"; do
-      item="${item//[[:space:]]/}"
-      if [[ ! "$item" =~ ^[0-9]+$ ]] || ((item < 1 || item > ${#YATTA_MODULE_IDS[@]})); then
-        yatta_log_warn "忽略无效序号：${item}"
-        continue
-      fi
-      index=$((item - 1))
-      if [[ "${YATTA_MODULE_LOCKED[$index]}" == "true" ]]; then
-        yatta_log_warn "模块 ${YATTA_MODULE_NAMES[$index]} 不可取消。"
-        continue
-      fi
-      if yatta_module_is_enabled "$index"; then
-        YATTA_MODULE_ENABLED[$index]="false"
-      else
-        YATTA_MODULE_ENABLED[$index]="true"
-      fi
-    done
+    if [[ "${YATTA_MODULE_LOCKED[$index]}" == "true" ]]; then
+      locked_csv="${locked_csv:+$locked_csv,}$index"
+    fi
   done
+  while IFS= read -r chosen_index; do
+    [[ "$chosen_index" =~ ^[0-9]+$ ]] && chosen[$chosen_index]="true"
+  done < <(yatta_ui_multi_select "选择本次启用模块" "$selected_csv" "$locked_csv" "${options[@]}")
+
+  for index in "${!YATTA_MODULE_IDS[@]}"; do
+    if [[ "${YATTA_MODULE_LOCKED[$index]}" == "true" ]]; then
+      YATTA_MODULE_ENABLED[$index]="true"
+    elif [[ "${chosen[$index]:-false}" == "true" ]]; then
+      YATTA_MODULE_ENABLED[$index]="true"
+    else
+      YATTA_MODULE_ENABLED[$index]="false"
+    fi
+  done
+  yatta_module_selection_show
 }
 
 yatta_select_runtime_modules() {
@@ -249,6 +248,13 @@ yatta_call_function() {
     return 1
   fi
   "$fn"
+}
+
+yatta_final_task_add() {
+  local name="$1"
+  local fn="$2"
+  YATTA_FINAL_TASK_NAMES+=("$name")
+  YATTA_FINAL_TASK_FNS+=("$fn")
 }
 
 yatta_has_tty() {

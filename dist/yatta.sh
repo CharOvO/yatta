@@ -29,6 +29,9 @@ YATTA_PORT_PLAN_PROTOCOLS=()
 YATTA_PORT_PLAN_PORTS=()
 YATTA_PORT_PLAN_PURPOSES=()
 
+YATTA_FINAL_TASK_NAMES=()
+YATTA_FINAL_TASK_FNS=()
+
 yatta_module_register() {
   YATTA_MODULE_IDS+=("$1")
   YATTA_MODULE_NAMES+=("$2")
@@ -88,59 +91,55 @@ yatta_module_selection_apply_list() {
 }
 
 yatta_module_selection_show() {
-  local index marker locked_label risk_label group_label
+  local index marker locked_label
   printf '%s\n' "本次启用模块：" >&2
-  printf '  %-4s %-4s %-14s %-12s %-8s %s\n' "序号" "启用" "阶段" "分组" "风险" "模块" >&2
   for index in "${!YATTA_MODULE_IDS[@]}"; do
     marker="[ ]"
     yatta_module_is_enabled "$index" && marker="[x]"
     locked_label=""
     [[ "${YATTA_MODULE_LOCKED[$index]}" == "true" ]] && locked_label=" locked"
-    risk_label="${YATTA_MODULE_RISKS[$index]}"
-    group_label="${YATTA_MODULE_GROUPS[$index]}"
-    printf '  %-4d %-4s %-14s %-12s %-8s %s%s\n' \
-      "$((index + 1))" \
+    printf '  %s %d. %s | stage=%s | group=%s | risk=%s%s\n' \
       "$marker" \
-      "${YATTA_MODULE_STAGES[$index]}" \
-      "$group_label" \
-      "$risk_label" \
+      "$((index + 1))" \
       "${YATTA_MODULE_NAMES[$index]}" \
+      "${YATTA_MODULE_STAGES[$index]}" \
+      "${YATTA_MODULE_GROUPS[$index]}" \
+      "${YATTA_MODULE_RISKS[$index]}" \
       "$locked_label" >&2
   done
 }
 
 yatta_module_selection_prompt() {
-  local answer index item
-  local items=()
-  while true; do
-    yatta_module_selection_show
-    printf '%s' "输入要切换启用状态的序号，多个序号用逗号分隔；直接回车继续: " >&2
-    if yatta_has_tty; then
-      IFS= read -r answer </dev/tty || answer=""
-    else
-      IFS= read -r answer || answer=""
+  local index selected_csv locked_csv locked_label chosen_index
+  local options=()
+  local chosen=()
+  selected_csv=""
+  locked_csv=""
+  for index in "${!YATTA_MODULE_IDS[@]}"; do
+    locked_label=""
+    [[ "${YATTA_MODULE_LOCKED[$index]}" == "true" ]] && locked_label=" locked"
+    options+=("$((index + 1)). ${YATTA_MODULE_NAMES[$index]} | stage=${YATTA_MODULE_STAGES[$index]} | group=${YATTA_MODULE_GROUPS[$index]} | risk=${YATTA_MODULE_RISKS[$index]}${locked_label}")
+    if yatta_module_is_enabled "$index"; then
+      selected_csv="${selected_csv:+$selected_csv,}$index"
     fi
-    answer="${answer//$'\r'/}"
-    [[ -z "$answer" ]] && return 0
-    IFS=',' read -ra items <<<"$answer"
-    for item in "${items[@]}"; do
-      item="${item//[[:space:]]/}"
-      if [[ ! "$item" =~ ^[0-9]+$ ]] || ((item < 1 || item > ${#YATTA_MODULE_IDS[@]})); then
-        yatta_log_warn "忽略无效序号：${item}"
-        continue
-      fi
-      index=$((item - 1))
-      if [[ "${YATTA_MODULE_LOCKED[$index]}" == "true" ]]; then
-        yatta_log_warn "模块 ${YATTA_MODULE_NAMES[$index]} 不可取消。"
-        continue
-      fi
-      if yatta_module_is_enabled "$index"; then
-        YATTA_MODULE_ENABLED[$index]="false"
-      else
-        YATTA_MODULE_ENABLED[$index]="true"
-      fi
-    done
+    if [[ "${YATTA_MODULE_LOCKED[$index]}" == "true" ]]; then
+      locked_csv="${locked_csv:+$locked_csv,}$index"
+    fi
   done
+  while IFS= read -r chosen_index; do
+    [[ "$chosen_index" =~ ^[0-9]+$ ]] && chosen[$chosen_index]="true"
+  done < <(yatta_ui_multi_select "选择本次启用模块" "$selected_csv" "$locked_csv" "${options[@]}")
+
+  for index in "${!YATTA_MODULE_IDS[@]}"; do
+    if [[ "${YATTA_MODULE_LOCKED[$index]}" == "true" ]]; then
+      YATTA_MODULE_ENABLED[$index]="true"
+    elif [[ "${chosen[$index]:-false}" == "true" ]]; then
+      YATTA_MODULE_ENABLED[$index]="true"
+    else
+      YATTA_MODULE_ENABLED[$index]="false"
+    fi
+  done
+  yatta_module_selection_show
 }
 
 yatta_select_runtime_modules() {
@@ -257,6 +256,13 @@ yatta_call_function() {
   "$fn"
 }
 
+yatta_final_task_add() {
+  local name="$1"
+  local fn="$2"
+  YATTA_FINAL_TASK_NAMES+=("$name")
+  YATTA_FINAL_TASK_FNS+=("$fn")
+}
+
 yatta_has_tty() {
   [[ -t 0 && -r /dev/tty && -w /dev/tty ]]
 }
@@ -330,6 +336,26 @@ yatta_run_applies() {
   done
 }
 
+yatta_run_final_tasks() {
+  local index name task_fn
+  if [[ "${#YATTA_FINAL_TASK_FNS[@]}" -eq 0 ]]; then
+    return 0
+  fi
+
+  yatta_ui_section "最终敏感操作"
+  yatta_log_warn "以下操作会在所有模块和收尾任务完成后执行，可能影响当前远程连接。"
+  for index in "${!YATTA_FINAL_TASK_FNS[@]}"; do
+    name="${YATTA_FINAL_TASK_NAMES[$index]}"
+    task_fn="${YATTA_FINAL_TASK_FNS[$index]}"
+    yatta_ui_spinner "执行最终操作：${name}" yatta_call_function "$task_fn"
+    if [[ "$?" -ne 0 ]]; then
+      yatta_log_error "最终操作 ${name} 失败，后续任务已停止。"
+      return 1
+    fi
+    yatta_log_ok "最终操作 ${name} 已完成。"
+  done
+}
+
 yatta_main() {
   local apply_default="n"
   local arg_status
@@ -376,6 +402,10 @@ yatta_main() {
   fi
   if ! yatta_run_applies "post" "收尾执行"; then
     yatta_log_error "Yatta 收尾执行失败，请根据上方日志处理后重试。"
+    return 1
+  fi
+  if ! yatta_run_final_tasks; then
+    yatta_log_error "Yatta 最终敏感操作失败，请根据上方日志处理后重试。"
     return 1
   fi
 
@@ -594,6 +624,152 @@ yatta_ui_select_arrow() {
         "[B") ((selected < ${#options[@]} - 1)) && selected=$((selected + 1)) ;;
       esac
     fi
+    printf '\033[%dA' "${#options[@]}" >/dev/tty
+  done
+}
+
+yatta_ui_multi_select() {
+  local prompt="$1"
+  local selected_csv="${2:-}"
+  local locked_csv="${3:-}"
+  shift 3
+  if yatta_has_tty; then
+    yatta_ui_multi_select_arrow "$prompt" "$selected_csv" "$locked_csv" "$@"
+  else
+    yatta_ui_multi_select_numbered "$prompt" "$selected_csv" "$locked_csv" "$@"
+  fi
+}
+
+yatta_ui_multi_select_flags_init() {
+  local selected_csv="$1"
+  local locked_csv="$2"
+  local count="$3"
+  local item index
+  YATTA_UI_MULTI_SELECTED=()
+  YATTA_UI_MULTI_LOCKED=()
+  for ((index = 0; index < count; index++)); do
+    YATTA_UI_MULTI_SELECTED[$index]="false"
+    YATTA_UI_MULTI_LOCKED[$index]="false"
+  done
+  IFS=',' read -ra YATTA_UI_MULTI_SELECTED_ITEMS <<<"$selected_csv"
+  for item in "${YATTA_UI_MULTI_SELECTED_ITEMS[@]}"; do
+    item="${item//[[:space:]]/}"
+    [[ "$item" =~ ^[0-9]+$ ]] && ((item >= 0 && item < count)) && YATTA_UI_MULTI_SELECTED[$item]="true"
+  done
+  IFS=',' read -ra YATTA_UI_MULTI_LOCKED_ITEMS <<<"$locked_csv"
+  for item in "${YATTA_UI_MULTI_LOCKED_ITEMS[@]}"; do
+    item="${item//[[:space:]]/}"
+    if [[ "$item" =~ ^[0-9]+$ ]] && ((item >= 0 && item < count)); then
+      YATTA_UI_MULTI_LOCKED[$item]="true"
+      YATTA_UI_MULTI_SELECTED[$item]="true"
+    fi
+  done
+}
+
+yatta_ui_multi_select_emit() {
+  local index
+  for index in "${!YATTA_UI_MULTI_SELECTED[@]}"; do
+    [[ "${YATTA_UI_MULTI_SELECTED[$index]}" == "true" ]] && printf '%s\n' "$index"
+  done
+}
+
+yatta_ui_multi_select_numbered() {
+  local prompt="$1"
+  local selected_csv="${2:-}"
+  local locked_csv="${3:-}"
+  shift 3
+  local options=("$@")
+  local answer item index marker locked_label
+  yatta_ui_multi_select_flags_init "$selected_csv" "$locked_csv" "${#options[@]}"
+  printf '%s\n' "$prompt" >&2
+  for index in "${!options[@]}"; do
+    marker="[ ]"
+    [[ "${YATTA_UI_MULTI_SELECTED[$index]}" == "true" ]] && marker="[x]"
+    locked_label=""
+    [[ "${YATTA_UI_MULTI_LOCKED[$index]}" == "true" ]] && locked_label=" locked"
+    printf '  %d) %s %s%s\n' "$((index + 1))" "$marker" "${options[$index]}" "$locked_label" >&2
+  done
+  printf '%s' "输入要选中的序号，多个序号用逗号分隔；直接回车使用当前选择: " >&2
+  if yatta_has_tty; then
+    IFS= read -r answer </dev/tty || answer=""
+  else
+    IFS= read -r answer || answer=""
+  fi
+  answer="${answer//$'\r'/}"
+  if [[ -n "$answer" ]]; then
+    for index in "${!options[@]}"; do
+      if [[ "${YATTA_UI_MULTI_LOCKED[$index]}" == "true" ]]; then
+        YATTA_UI_MULTI_SELECTED[$index]="true"
+      else
+        YATTA_UI_MULTI_SELECTED[$index]="false"
+      fi
+    done
+    IFS=',' read -ra YATTA_UI_MULTI_ANSWER_ITEMS <<<"$answer"
+    for item in "${YATTA_UI_MULTI_ANSWER_ITEMS[@]}"; do
+      item="${item//[[:space:]]/}"
+      if [[ ! "$item" =~ ^[0-9]+$ ]] || ((item < 1 || item > ${#options[@]})); then
+        yatta_log_warn "忽略无效序号：${item}"
+        continue
+      fi
+      index=$((item - 1))
+      if [[ "${YATTA_UI_MULTI_LOCKED[$index]}" == "true" ]]; then
+        yatta_log_warn "该项目不可取消：${options[$index]}"
+        YATTA_UI_MULTI_SELECTED[$index]="true"
+        continue
+      fi
+      YATTA_UI_MULTI_SELECTED[$index]="true"
+    done
+  fi
+  yatta_ui_multi_select_emit
+}
+
+yatta_ui_multi_select_arrow() {
+  local prompt="$1"
+  local selected_csv="${2:-}"
+  local locked_csv="${3:-}"
+  shift 3
+  local options=("$@")
+  local selected=0
+  local key rest index marker
+  yatta_ui_multi_select_flags_init "$selected_csv" "$locked_csv" "${#options[@]}"
+  printf '%s\n' "$prompt" >/dev/tty
+  printf '%s\n' "↑/↓ 移动，Space 切换，Enter 确认。" >/dev/tty
+  while true; do
+    for index in "${!options[@]}"; do
+      marker="[ ]"
+      [[ "${YATTA_UI_MULTI_SELECTED[$index]}" == "true" ]] && marker="[x]"
+      if [[ "$index" -eq "$selected" ]]; then
+        printf '\r\033[K  %s %s%s %s%s\n' "$YATTA_SYMBOL_ARROW" "$YATTA_COLOR_BOLD" "$marker" "${options[$index]}" "$YATTA_COLOR_RESET" >/dev/tty
+      else
+        printf '\r\033[K    %s %s\n' "$marker" "${options[$index]}" >/dev/tty
+      fi
+    done
+    IFS= read -rsn1 key </dev/tty || {
+      yatta_ui_multi_select_numbered "$prompt" "$selected_csv" "$locked_csv" "${options[@]}"
+      return
+    }
+    case "$key" in
+      "")
+        yatta_ui_multi_select_emit
+        return 0
+        ;;
+      " ")
+        if [[ "${YATTA_UI_MULTI_LOCKED[$selected]}" == "true" ]]; then
+          printf '\a' >/dev/tty
+        elif [[ "${YATTA_UI_MULTI_SELECTED[$selected]}" == "true" ]]; then
+          YATTA_UI_MULTI_SELECTED[$selected]="false"
+        else
+          YATTA_UI_MULTI_SELECTED[$selected]="true"
+        fi
+        ;;
+      $'\033')
+        IFS= read -rsn2 -t 0.1 rest </dev/tty || rest=""
+        case "$rest" in
+          "[A") ((selected > 0)) && selected=$((selected - 1)) ;;
+          "[B") ((selected < ${#options[@]} - 1)) && selected=$((selected + 1)) ;;
+        esac
+        ;;
+    esac
     printf '\033[%dA' "${#options[@]}" >/dev/tty
   done
 }
@@ -1621,12 +1797,15 @@ if yatta_ui_confirm "是否创建或确认一个非 root sudo 用户？" "y"; th
 
   if [[ "${#candidate_users[@]}" -gt 0 ]]; then
     yatta_log_info "可检查的普通用户：${candidate_users[*]}"
-    if yatta_ui_confirm "是否逐个确认删除多余普通用户？默认保留 home。" "n"; then
-      for candidate_user in "${candidate_users[@]}"; do
-        if yatta_ui_confirm "确认删除用户 ${candidate_user}？" "n"; then
-          YATTA_USER_DELETE_USERS+=("$candidate_user")
+    if yatta_ui_confirm "是否选择要删除的多余普通用户？默认保留 home。" "n"; then
+      while IFS= read -r selected_user_index; do
+        if [[ "$selected_user_index" =~ ^[0-9]+$ ]] && ((selected_user_index >= 0 && selected_user_index < ${#candidate_users[@]})); then
+          YATTA_USER_DELETE_USERS+=("${candidate_users[$selected_user_index]}")
         fi
-      done
+      done < <(yatta_ui_multi_select "选择要删除的普通用户" "" "" "${candidate_users[@]}")
+      if [[ "${#YATTA_USER_DELETE_USERS[@]}" -eq 0 ]]; then
+        yatta_log_info "没有选择要删除的普通用户。"
+      fi
     fi
   fi
 fi
@@ -1736,10 +1915,10 @@ else
   yatta_plan_add "packages" "warn" "跳过基础软件包安装，缺失：${YATTA_PACKAGES_MISSING[*]}"
 fi
 
-if yatta_ui_confirm "是否在脚本全部执行完成后运行 apt upgrade？这可能升级大量系统包。" "n"; then
+if yatta_ui_confirm "是否在常规模块完成后运行 apt upgrade？这可能升级大量系统包。" "n"; then
   YATTA_PACKAGES_APT_UPDATE="1"
   YATTA_PACKAGES_APT_UPGRADE="1"
-  yatta_plan_add "packages" "warn" "将在所有模块完成后执行 apt upgrade 作为最后收尾任务。"
+  yatta_plan_add "packages" "warn" "将在常规模块完成后执行 apt upgrade；远程访问类最终操作会排在它之后。"
 else
   yatta_plan_add "packages" "info" "跳过 apt upgrade 收尾任务。"
 fi
@@ -1778,19 +1957,20 @@ yatta_apt_install_missing "${fresh_missing[@]}"
 
 yatta_module_packages_post_apply() {
 # apt upgrade 可能触发较大范围的软件包升级，所以只在用户明确确认后，
-# 作为全部模块完成后的最后收尾任务执行。
+# 作为常规模块完成后的收尾任务执行；远程访问类最终操作会排在它之后。
 if [[ "${YATTA_PACKAGES_APT_UPGRADE:-0}" != "1" ]]; then
   yatta_log_info "已跳过 apt upgrade 收尾任务。"
   return 0
 fi
 
-yatta_log_warn "即将执行 apt upgrade，这是本次脚本的最后收尾任务。"
+yatta_log_warn "即将执行 apt upgrade，这是 packages 模块的收尾任务。"
 yatta_apt_upgrade
 }
 
 yatta_module_ssh_hardening_prompt() {
 # SSH 加固是远程访问高风险模块。prompt 阶段只读取当前配置、确认风险并登记计划，
-# 真正的 sshd drop-in 写入、校验和 reload 必须等用户确认完整执行计划后再进行。
+# 真正的 sshd drop-in 写入、校验和 reload 必须等用户确认完整执行计划后，
+# 并在所有模块和收尾任务完成后作为最终敏感操作执行。
 YATTA_SSH_ACTION="configure"
 YATTA_SSH_TARGET_USER=""
 YATTA_SSH_HAS_KEY_EVIDENCE="0"
@@ -1828,7 +2008,7 @@ current_max_auth_tries="$(yatta_sshd_effective_value "maxauthtries" "6")"
 current_login_grace_time="$(yatta_sshd_effective_value "logingracetime" "120")"
 current_x11_forwarding="$(yatta_sshd_effective_value "x11forwarding" "yes")"
 
-yatta_log_warn "SSH 加固可能影响远程登录。建议保持当前 SSH 会话，同时另开终端验证新登录路径。"
+yatta_log_warn "SSH 加固可能影响远程登录；Yatta 会把配置生效延后到最后一步。建议保持当前 SSH 会话，同时另开终端验证新登录路径。"
 yatta_log_info "当前 SSH 摘要：端口 ${YATTA_SSH_OLD_PORT}，root=${current_root_login}，password=${current_password_auth}，kbd-interactive=${current_kbd_auth}，pubkey=${current_pubkey_auth}。"
 
 if [[ "${YATTA_USER_ACTION:-skip}" != "skip" && -n "${YATTA_USER_NAME:-}" ]] && yatta_valid_username "${YATTA_USER_NAME:-}"; then
@@ -1884,14 +2064,14 @@ case "$port_choice" in
       YATTA_SSH_SET_PORT="1"
       yatta_port_plan_add "ssh-hardening" "tcp" "$YATTA_SSH_TARGET_PORT" "SSH 新端口"
       yatta_port_plan_add "ssh-hardening" "tcp" "$YATTA_SSH_OLD_PORT" "SSH 临时保底放行旧端口"
-      yatta_log_warn "旧端口只会登记给 UFW 临时放行；sshd 本身将只监听新端口。"
+      yatta_log_warn "旧端口只会登记给 UFW 临时放行；最后一步 reload 后 sshd 本身将只监听新端口。"
     fi
     ;;
 esac
 
-root_choice="$(yatta_ui_select "root 登录策略" 0 "完全禁用 root 登录（推荐）" "仅禁止 root 密码登录" "保持当前：${current_root_login}")"
+root_choice="$(yatta_ui_select "root 登录策略" 0 "设置 PermitRootLogin no（推荐）" "设置 PermitRootLogin prohibit-password" "设置 PermitRootLogin yes" "保持当前：${current_root_login}")"
 case "$root_choice" in
-  完全禁用*)
+  设置\ PermitRootLogin\ no*)
     if [[ -n "$YATTA_SSH_TARGET_USER" && "$YATTA_SSH_HAS_KEY_EVIDENCE" == "1" ]]; then
       YATTA_SSH_SET_PERMIT_ROOT_LOGIN="1"
       YATTA_SSH_PERMIT_ROOT_LOGIN="no"
@@ -1899,15 +2079,20 @@ case "$root_choice" in
       yatta_log_warn "缺少可用 sudo 用户或密钥证据，已保持 root 登录策略不变。"
     fi
     ;;
-  仅禁止*)
+  设置\ PermitRootLogin\ prohibit-password)
     YATTA_SSH_SET_PERMIT_ROOT_LOGIN="1"
     YATTA_SSH_PERMIT_ROOT_LOGIN="prohibit-password"
     ;;
+  设置\ PermitRootLogin\ yes)
+    YATTA_SSH_SET_PERMIT_ROOT_LOGIN="1"
+    YATTA_SSH_PERMIT_ROOT_LOGIN="yes"
+    yatta_log_warn "已选择允许 root SSH 登录，请确认这符合你的安全策略。"
+    ;;
 esac
 
-password_choice="$(yatta_ui_select "密码与键盘交互登录策略" 0 "禁用密码和键盘交互登录（推荐）" "保持当前：password=${current_password_auth}, kbd=${current_kbd_auth}" "启用密码和键盘交互登录")"
+password_choice="$(yatta_ui_select "密码与键盘交互登录策略" 0 "设置 PasswordAuthentication/KbdInteractiveAuthentication no（推荐）" "设置 PasswordAuthentication/KbdInteractiveAuthentication yes" "保持当前：password=${current_password_auth}, kbd=${current_kbd_auth}")"
 case "$password_choice" in
-  禁用*)
+  设置\ PasswordAuthentication/KbdInteractiveAuthentication\ no*)
     if [[ "$YATTA_SSH_HAS_KEY_EVIDENCE" == "1" ]]; then
       YATTA_SSH_SET_PASSWORD_AUTHENTICATION="1"
       YATTA_SSH_PASSWORD_AUTHENTICATION="no"
@@ -1917,7 +2102,7 @@ case "$password_choice" in
       yatta_log_warn "缺少密钥登录证据，已保持密码与键盘交互登录策略不变。"
     fi
     ;;
-  启用*)
+  设置\ PasswordAuthentication/KbdInteractiveAuthentication\ yes)
     YATTA_SSH_SET_PASSWORD_AUTHENTICATION="1"
     YATTA_SSH_PASSWORD_AUTHENTICATION="yes"
     YATTA_SSH_SET_KBD_INTERACTIVE_AUTHENTICATION="1"
@@ -1925,19 +2110,29 @@ case "$password_choice" in
     ;;
 esac
 
-pubkey_choice="$(yatta_ui_select "密钥登录策略" 0 "启用密钥登录（推荐）" "保持当前：${current_pubkey_auth}")"
+pubkey_choice="$(yatta_ui_select "密钥登录策略" 0 "设置 PubkeyAuthentication yes（推荐）" "设置 PubkeyAuthentication no" "保持当前：${current_pubkey_auth}")"
 case "$pubkey_choice" in
-  启用*)
+  设置\ PubkeyAuthentication\ yes*)
     YATTA_SSH_SET_PUBKEY_AUTHENTICATION="1"
     YATTA_SSH_PUBKEY_AUTHENTICATION="yes"
     ;;
+  设置\ PubkeyAuthentication\ no)
+    YATTA_SSH_SET_PUBKEY_AUTHENTICATION="1"
+    YATTA_SSH_PUBKEY_AUTHENTICATION="no"
+    yatta_log_warn "已选择禁用 SSH 密钥登录，请确认仍有可用登录路径。"
+    ;;
 esac
 
-empty_choice="$(yatta_ui_select "空密码策略" 0 "禁用空密码登录（推荐）" "保持当前：${current_empty_passwords}")"
+empty_choice="$(yatta_ui_select "空密码策略" 0 "设置 PermitEmptyPasswords no（推荐）" "设置 PermitEmptyPasswords yes" "保持当前：${current_empty_passwords}")"
 case "$empty_choice" in
-  禁用*)
+  设置\ PermitEmptyPasswords\ no*)
     YATTA_SSH_SET_PERMIT_EMPTY_PASSWORDS="1"
     YATTA_SSH_PERMIT_EMPTY_PASSWORDS="no"
+    ;;
+  设置\ PermitEmptyPasswords\ yes)
+    YATTA_SSH_SET_PERMIT_EMPTY_PASSWORDS="1"
+    YATTA_SSH_PERMIT_EMPTY_PASSWORDS="yes"
+    yatta_log_warn "已选择允许空密码登录，请确认这只是临时兼容需求。"
     ;;
 esac
 
@@ -1977,16 +2172,20 @@ case "$grace_choice" in
     ;;
 esac
 
-x11_choice="$(yatta_ui_select "X11 转发策略" 0 "禁用 X11Forwarding（推荐）" "保持当前：${current_x11_forwarding}")"
+x11_choice="$(yatta_ui_select "X11 转发策略" 0 "设置 X11Forwarding no（推荐）" "设置 X11Forwarding yes" "保持当前：${current_x11_forwarding}")"
 case "$x11_choice" in
-  禁用*)
+  设置\ X11Forwarding\ no*)
     YATTA_SSH_SET_X11_FORWARDING="1"
     YATTA_SSH_X11_FORWARDING="no"
+    ;;
+  设置\ X11Forwarding\ yes)
+    YATTA_SSH_SET_X11_FORWARDING="1"
+    YATTA_SSH_X11_FORWARDING="yes"
     ;;
 esac
 
 if [[ "$YATTA_SSH_SET_PORT" == "1" ]]; then
-  yatta_plan_add "ssh-hardening" "warn" "将 SSH 监听端口改为 ${YATTA_SSH_TARGET_PORT}；旧端口 ${YATTA_SSH_OLD_PORT} 仅登记为 UFW 临时保底放行。"
+  yatta_plan_add "ssh-hardening" "warn" "将在最终敏感操作中把 SSH 监听端口改为 ${YATTA_SSH_TARGET_PORT}；旧端口 ${YATTA_SSH_OLD_PORT} 仅登记为 UFW 临时保底放行。"
 else
   yatta_plan_add "ssh-hardening" "info" "保持 SSH 端口不变：${YATTA_SSH_OLD_PORT}。"
 fi
@@ -2015,7 +2214,117 @@ fi
 if [[ "$YATTA_SSH_SET_X11_FORWARDING" == "1" ]]; then
   yatta_plan_add "ssh-hardening" "info" "将设置 X11Forwarding ${YATTA_SSH_X11_FORWARDING}。"
 fi
-yatta_plan_add "ssh-hardening" "warn" "写入 SSH drop-in 后会先执行 sshd -t 和有效值校验，成功后仅 reload SSH 服务。"
+yatta_plan_add "ssh-hardening" "warn" "SSH drop-in 会在所有模块和收尾任务之后写入；先执行 sshd -t 和有效值校验，成功后仅 reload SSH 服务，当前连接可能断开。"
+
+yatta_ssh_hardening_has_changes() {
+  [[ "${YATTA_SSH_SET_PORT:-0}" == "1" ||
+    "${YATTA_SSH_SET_PERMIT_ROOT_LOGIN:-0}" == "1" ||
+    "${YATTA_SSH_SET_PASSWORD_AUTHENTICATION:-0}" == "1" ||
+    "${YATTA_SSH_SET_KBD_INTERACTIVE_AUTHENTICATION:-0}" == "1" ||
+    "${YATTA_SSH_SET_PUBKEY_AUTHENTICATION:-0}" == "1" ||
+    "${YATTA_SSH_SET_PERMIT_EMPTY_PASSWORDS:-0}" == "1" ||
+    "${YATTA_SSH_SET_MAX_AUTH_TRIES:-0}" == "1" ||
+    "${YATTA_SSH_SET_LOGIN_GRACE_TIME:-0}" == "1" ||
+    "${YATTA_SSH_SET_X11_FORWARDING:-0}" == "1" ]]
+}
+
+yatta_ssh_hardening_apply_final() {
+  local content expected_pairs changed
+  content="# Yatta managed SSH hardening. Do not edit this file directly.
+"
+  expected_pairs=()
+  changed="0"
+
+  yatta_ssh_add_directive() {
+    local key="$1"
+    local value="$2"
+    local effective_key="${3:-${key,,}}"
+    content+="${key} ${value}"$'\n'
+    expected_pairs+=("${effective_key}=${value}")
+    changed="1"
+  }
+
+  if [[ "${YATTA_SSH_SET_PORT:-0}" == "1" ]]; then
+    if ! yatta_valid_port "${YATTA_SSH_TARGET_PORT:-}"; then
+      yatta_log_error "SSH 目标端口无效，已停止。"
+      return 1
+    fi
+    yatta_ssh_add_directive "Port" "$YATTA_SSH_TARGET_PORT" "port"
+  fi
+
+  if [[ "${YATTA_SSH_SET_PERMIT_ROOT_LOGIN:-0}" == "1" ]]; then
+    case "${YATTA_SSH_PERMIT_ROOT_LOGIN:-}" in
+      yes | no | prohibit-password) yatta_ssh_add_directive "PermitRootLogin" "$YATTA_SSH_PERMIT_ROOT_LOGIN" "permitrootlogin" ;;
+      *) yatta_log_error "PermitRootLogin 目标值无效，已停止。"; return 1 ;;
+    esac
+  fi
+
+  if [[ "${YATTA_SSH_SET_PASSWORD_AUTHENTICATION:-0}" == "1" ]]; then
+    case "${YATTA_SSH_PASSWORD_AUTHENTICATION:-}" in
+      yes | no) yatta_ssh_add_directive "PasswordAuthentication" "$YATTA_SSH_PASSWORD_AUTHENTICATION" "passwordauthentication" ;;
+      *) yatta_log_error "PasswordAuthentication 目标值无效，已停止。"; return 1 ;;
+    esac
+  fi
+
+  if [[ "${YATTA_SSH_SET_KBD_INTERACTIVE_AUTHENTICATION:-0}" == "1" ]]; then
+    case "${YATTA_SSH_KBD_INTERACTIVE_AUTHENTICATION:-}" in
+      yes | no) yatta_ssh_add_directive "KbdInteractiveAuthentication" "$YATTA_SSH_KBD_INTERACTIVE_AUTHENTICATION" "kbdinteractiveauthentication" ;;
+      *) yatta_log_error "KbdInteractiveAuthentication 目标值无效，已停止。"; return 1 ;;
+    esac
+  fi
+
+  if [[ "${YATTA_SSH_SET_PUBKEY_AUTHENTICATION:-0}" == "1" ]]; then
+    case "${YATTA_SSH_PUBKEY_AUTHENTICATION:-}" in
+      yes | no) yatta_ssh_add_directive "PubkeyAuthentication" "$YATTA_SSH_PUBKEY_AUTHENTICATION" "pubkeyauthentication" ;;
+      *) yatta_log_error "PubkeyAuthentication 目标值无效，已停止。"; return 1 ;;
+    esac
+  fi
+
+  if [[ "${YATTA_SSH_SET_PERMIT_EMPTY_PASSWORDS:-0}" == "1" ]]; then
+    case "${YATTA_SSH_PERMIT_EMPTY_PASSWORDS:-}" in
+      yes | no) yatta_ssh_add_directive "PermitEmptyPasswords" "$YATTA_SSH_PERMIT_EMPTY_PASSWORDS" "permitemptypasswords" ;;
+      *) yatta_log_error "PermitEmptyPasswords 目标值无效，已停止。"; return 1 ;;
+    esac
+  fi
+
+  if [[ "${YATTA_SSH_SET_MAX_AUTH_TRIES:-0}" == "1" ]]; then
+    if [[ ! "${YATTA_SSH_MAX_AUTH_TRIES:-}" =~ ^[0-9]+$ ]] || ((YATTA_SSH_MAX_AUTH_TRIES < 1 || YATTA_SSH_MAX_AUTH_TRIES > 10)); then
+      yatta_log_error "MaxAuthTries 目标值无效，已停止。"
+      return 1
+    fi
+    yatta_ssh_add_directive "MaxAuthTries" "$YATTA_SSH_MAX_AUTH_TRIES" "maxauthtries"
+  fi
+
+  if [[ "${YATTA_SSH_SET_LOGIN_GRACE_TIME:-0}" == "1" ]]; then
+    if [[ ! "${YATTA_SSH_LOGIN_GRACE_TIME:-}" =~ ^[0-9]+$ ]] || ((YATTA_SSH_LOGIN_GRACE_TIME < 10 || YATTA_SSH_LOGIN_GRACE_TIME > 300)); then
+      yatta_log_error "LoginGraceTime 目标值无效，已停止。"
+      return 1
+    fi
+    yatta_ssh_add_directive "LoginGraceTime" "$YATTA_SSH_LOGIN_GRACE_TIME" "logingracetime"
+  fi
+
+  if [[ "${YATTA_SSH_SET_X11_FORWARDING:-0}" == "1" ]]; then
+    case "${YATTA_SSH_X11_FORWARDING:-}" in
+      yes | no) yatta_ssh_add_directive "X11Forwarding" "$YATTA_SSH_X11_FORWARDING" "x11forwarding" ;;
+      *) yatta_log_error "X11Forwarding 目标值无效，已停止。"; return 1 ;;
+    esac
+  fi
+
+  if [[ "$changed" != "1" ]]; then
+    yatta_log_info "没有需要应用的 SSH 加固配置。"
+    return 0
+  fi
+
+  if [[ "${YATTA_SSH_SET_PORT:-0}" == "1" ]]; then
+    yatta_log_warn "即将让 SSH 新端口 ${YATTA_SSH_TARGET_PORT} 生效；当前连接可能会断开，请使用新端口重新连接。"
+  fi
+  yatta_install_sshd_hardening_config "$content" "${expected_pairs[@]}" || return 1
+  yatta_reload_ssh_service
+}
+
+if yatta_ssh_hardening_has_changes; then
+  yatta_final_task_add "SSH 加固配置生效" yatta_ssh_hardening_apply_final
+fi
 }
 
 yatta_module_ssh_hardening_pre_apply() {
@@ -2023,95 +2332,14 @@ yatta_module_ssh_hardening_pre_apply() {
 }
 
 yatta_module_ssh_hardening_apply() {
-# apply 阶段生成 Yatta 独立管理的 sshd drop-in。任何校验失败都必须停止并回滚，
-# 避免把远程登录入口留在半修改状态。
-content="# Yatta managed SSH hardening. Do not edit this file directly.
-"
-expected_pairs=()
-changed="0"
-
-yatta_ssh_add_directive() {
-  local key="$1"
-  local value="$2"
-  local effective_key="${3:-${key,,}}"
-  content+="${key} ${value}"$'\n'
-  expected_pairs+=("${effective_key}=${value}")
-  changed="1"
-}
-
-if [[ "${YATTA_SSH_SET_PORT:-0}" == "1" ]]; then
-  if ! yatta_valid_port "${YATTA_SSH_TARGET_PORT:-}"; then
-    yatta_log_error "SSH 目标端口无效，已停止。"
-    return 1
-  fi
-  yatta_ssh_add_directive "Port" "$YATTA_SSH_TARGET_PORT" "port"
-fi
-
-if [[ "${YATTA_SSH_SET_PERMIT_ROOT_LOGIN:-0}" == "1" ]]; then
-  case "${YATTA_SSH_PERMIT_ROOT_LOGIN:-}" in
-    no | prohibit-password) yatta_ssh_add_directive "PermitRootLogin" "$YATTA_SSH_PERMIT_ROOT_LOGIN" "permitrootlogin" ;;
-    *) yatta_log_error "PermitRootLogin 目标值无效，已停止。"; return 1 ;;
-  esac
-fi
-
-if [[ "${YATTA_SSH_SET_PASSWORD_AUTHENTICATION:-0}" == "1" ]]; then
-  case "${YATTA_SSH_PASSWORD_AUTHENTICATION:-}" in
-    yes | no) yatta_ssh_add_directive "PasswordAuthentication" "$YATTA_SSH_PASSWORD_AUTHENTICATION" "passwordauthentication" ;;
-    *) yatta_log_error "PasswordAuthentication 目标值无效，已停止。"; return 1 ;;
-  esac
-fi
-
-if [[ "${YATTA_SSH_SET_KBD_INTERACTIVE_AUTHENTICATION:-0}" == "1" ]]; then
-  case "${YATTA_SSH_KBD_INTERACTIVE_AUTHENTICATION:-}" in
-    yes | no) yatta_ssh_add_directive "KbdInteractiveAuthentication" "$YATTA_SSH_KBD_INTERACTIVE_AUTHENTICATION" "kbdinteractiveauthentication" ;;
-    *) yatta_log_error "KbdInteractiveAuthentication 目标值无效，已停止。"; return 1 ;;
-  esac
-fi
-
-if [[ "${YATTA_SSH_SET_PUBKEY_AUTHENTICATION:-0}" == "1" ]]; then
-  case "${YATTA_SSH_PUBKEY_AUTHENTICATION:-}" in
-    yes | no) yatta_ssh_add_directive "PubkeyAuthentication" "$YATTA_SSH_PUBKEY_AUTHENTICATION" "pubkeyauthentication" ;;
-    *) yatta_log_error "PubkeyAuthentication 目标值无效，已停止。"; return 1 ;;
-  esac
-fi
-
-if [[ "${YATTA_SSH_SET_PERMIT_EMPTY_PASSWORDS:-0}" == "1" ]]; then
-  case "${YATTA_SSH_PERMIT_EMPTY_PASSWORDS:-}" in
-    yes | no) yatta_ssh_add_directive "PermitEmptyPasswords" "$YATTA_SSH_PERMIT_EMPTY_PASSWORDS" "permitemptypasswords" ;;
-    *) yatta_log_error "PermitEmptyPasswords 目标值无效，已停止。"; return 1 ;;
-  esac
-fi
-
-if [[ "${YATTA_SSH_SET_MAX_AUTH_TRIES:-0}" == "1" ]]; then
-  if [[ ! "${YATTA_SSH_MAX_AUTH_TRIES:-}" =~ ^[0-9]+$ ]] || ((YATTA_SSH_MAX_AUTH_TRIES < 1 || YATTA_SSH_MAX_AUTH_TRIES > 10)); then
-    yatta_log_error "MaxAuthTries 目标值无效，已停止。"
-    return 1
-  fi
-  yatta_ssh_add_directive "MaxAuthTries" "$YATTA_SSH_MAX_AUTH_TRIES" "maxauthtries"
-fi
-
-if [[ "${YATTA_SSH_SET_LOGIN_GRACE_TIME:-0}" == "1" ]]; then
-  if [[ ! "${YATTA_SSH_LOGIN_GRACE_TIME:-}" =~ ^[0-9]+$ ]] || ((YATTA_SSH_LOGIN_GRACE_TIME < 10 || YATTA_SSH_LOGIN_GRACE_TIME > 300)); then
-    yatta_log_error "LoginGraceTime 目标值无效，已停止。"
-    return 1
-  fi
-  yatta_ssh_add_directive "LoginGraceTime" "$YATTA_SSH_LOGIN_GRACE_TIME" "logingracetime"
-fi
-
-if [[ "${YATTA_SSH_SET_X11_FORWARDING:-0}" == "1" ]]; then
-  case "${YATTA_SSH_X11_FORWARDING:-}" in
-    yes | no) yatta_ssh_add_directive "X11Forwarding" "$YATTA_SSH_X11_FORWARDING" "x11forwarding" ;;
-    *) yatta_log_error "X11Forwarding 目标值无效，已停止。"; return 1 ;;
-  esac
-fi
-
-if [[ "$changed" != "1" ]]; then
+# SSH 配置生效可能影响当前远程连接，因此 main apply 不直接写入或 reload。
+# prompt 阶段已经在主进程登记最终敏感操作，避免 TTY spinner 子进程丢失状态。
+if ! declare -F yatta_ssh_hardening_has_changes >/dev/null 2>&1 || ! yatta_ssh_hardening_has_changes; then
   yatta_log_info "没有需要应用的 SSH 加固配置。"
   return 0
 fi
 
-yatta_install_sshd_hardening_config "$content" "${expected_pairs[@]}" || return 1
-yatta_reload_ssh_service
+yatta_log_warn "SSH 加固已延后到所有模块和收尾任务之后生效；若更换端口，最后 reload 时当前连接可能断开。"
 }
 
 yatta_module_ssh_hardening_post_apply() {
@@ -2121,7 +2349,11 @@ yatta_module_ssh_hardening_post_apply() {
 yatta_module_ufw_prompt() {
 # UFW 是收尾模块，必须先确认并登记 SSH 放行策略，再允许启用防火墙。
 YATTA_UFW_ENABLE="0"
-YATTA_UFW_SSH_PORT="$(yatta_detect_ssh_port)"
+if [[ "${YATTA_SSH_SET_PORT:-0}" == "1" && -n "${YATTA_SSH_TARGET_PORT:-}" ]]; then
+  YATTA_UFW_SSH_PORT="$YATTA_SSH_TARGET_PORT"
+else
+  YATTA_UFW_SSH_PORT="$(yatta_detect_ssh_port)"
+fi
 YATTA_UFW_INSTALL_PACKAGE="0"
 YATTA_UFW_SET_DENY_INCOMING="0"
 YATTA_UFW_SET_ALLOW_OUTGOING="0"
@@ -2129,6 +2361,9 @@ YATTA_UFW_ALLOW_WEB="0"
 YATTA_UFW_CONFIRMED_PORT_PLAN="0"
 
 yatta_log_info "启用 UFW 时将自动执行：ufw default deny incoming；ufw default allow outgoing。启用前仍会先放行 SSH。"
+if [[ "${YATTA_SSH_SET_PORT:-0}" == "1" && "$YATTA_UFW_SSH_PORT" == "${YATTA_SSH_TARGET_PORT:-}" ]]; then
+  yatta_log_info "已读取 SSH 加固模块的新端口作为默认 SSH 放行端口：${YATTA_UFW_SSH_PORT}"
+fi
 
 if ! yatta_valid_port "$YATTA_UFW_SSH_PORT"; then
   yatta_log_warn "检测到的 SSH 端口无效，将默认使用 22，请确认。"
@@ -2183,7 +2418,16 @@ else
   yatta_plan_add "ufw" "info" "执行固定默认策略：ufw default allow outgoing"
   yatta_plan_add "ufw" "info" "启用 UFW 前放行 SSH：${YATTA_UFW_SSH_PORT}/tcp"
   if [[ "${#YATTA_PORT_PLAN_PORTS[@]}" -gt 0 ]]; then
-    yatta_plan_add "ufw" "info" "按已确认端口计划放行 ${#YATTA_PORT_PLAN_PORTS[@]} 条规则。"
+    port_plan_extra_count="0"
+    for index in "${!YATTA_PORT_PLAN_PORTS[@]}"; do
+      if [[ "${YATTA_PORT_PLAN_PORTS[$index]}" == "$YATTA_UFW_SSH_PORT" && "${YATTA_PORT_PLAN_PROTOCOLS[$index]}" == "tcp" ]]; then
+        continue
+      fi
+      port_plan_extra_count=$((port_plan_extra_count + 1))
+    done
+    if [[ "$port_plan_extra_count" -gt 0 ]]; then
+      yatta_plan_add "ufw" "info" "按已确认端口计划额外放行 ${port_plan_extra_count} 条规则。"
+    fi
   fi
   yatta_plan_add "ufw" "warn" "启用 UFW。请确认当前 SSH 连接端口已放行。"
 fi
@@ -2226,6 +2470,9 @@ yatta_ufw_allow_port "$YATTA_UFW_SSH_PORT" "tcp" || return 1
 
 if [[ "${YATTA_UFW_CONFIRMED_PORT_PLAN:-0}" == "1" ]]; then
   for index in "${!YATTA_PORT_PLAN_PORTS[@]}"; do
+    if [[ "${YATTA_PORT_PLAN_PORTS[$index]}" == "$YATTA_UFW_SSH_PORT" && "${YATTA_PORT_PLAN_PROTOCOLS[$index]}" == "tcp" ]]; then
+      continue
+    fi
     yatta_ufw_allow_port "${YATTA_PORT_PLAN_PORTS[$index]}" "${YATTA_PORT_PLAN_PROTOCOLS[$index]}" || return 1
   done
 fi

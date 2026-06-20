@@ -325,9 +325,12 @@ runtime 负责脚本入口硬检查和通用能力，例如 Bash、root、Ubuntu
 7. 按模块顺序执行 pre apply 前置阶段。
 8. 按模块顺序执行 main apply 主阶段。
 9. 按模块顺序执行 post apply 收尾阶段。
-10. 输出结果摘要。
+10. 执行 runtime 登记的最终敏感操作。
+11. 输出结果摘要。
 
 三段 apply 模型用于表达“开始前准备”和“最后收尾”这类跨模块需求。例如 packages 模块可以在 pre apply 中执行 `apt update`，在 post apply 中按用户确认执行 `apt upgrade`。
+
+最终敏感操作队列用于处理可能中断当前远程连接、但又必须等所有常规模块完成后才生效的动作，例如 SSH 端口切换后的配置写入、校验和 reload。模块不得把普通系统修改滥用为最终敏感操作；只有确实会影响脚本继续执行或远程连接稳定性的动作才应登记到该队列。
 
 ## 10. 交互与 Locale 规范
 
@@ -432,6 +435,7 @@ supports:
 - `pre_apply.sh` 可选，只允许在用户确认后执行前置准备，例如 `apt update`。
 - `apply.sh` 只允许在用户确认后执行真实系统变更。
 - `post_apply.sh` 可选，只允许执行收尾任务，例如用户确认后的 `apt upgrade`。
+- 可能影响当前远程连接并导致后续流程无法继续的动作，应在 prompt 阶段确认风险并登记 runtime 最终敏感操作，由 runtime 在所有 post apply 之后执行；apply 阶段不得依赖 TTY spinner 子进程去修改这类 runtime 队列。
 - `apply.sh` 中的系统操作应优先复用已有 runtime 或 adapter。如果是模块私有、非复用的一次性流程，可以在模块内直接调用命令，但必须使用清晰的检测、幂等和 dry-run 处理。
 - 模块必须按保守幂等策略实现。
 
@@ -500,7 +504,7 @@ curl wget git vim unzip ca-certificates gnupg lsb-release
 
 当用户确认安装且存在缺失包时，packages 模块必须在 pre apply 阶段通过 apt adapter 执行 `apt update`，避免模块直接散落 apt 命令。packages 模块不得安装 `ufw`，防火墙工具由 `ufw` 模块自行负责。
 
-packages 模块可以询问是否执行 `apt upgrade`，但必须清晰提示该操作可能升级大量系统包，并且会在所有模块完成后作为 post apply 收尾任务执行。
+packages 模块可以询问是否执行 `apt upgrade`，但必须清晰提示该操作可能升级大量系统包，并且会在常规模块完成后作为 post apply 收尾任务执行；远程访问类最终敏感操作可以排在它之后。
 
 ### ufw
 
