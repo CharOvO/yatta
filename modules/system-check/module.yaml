@@ -2,8 +2,11 @@ id: system-check
 name: System Check
 description: Show a basic environment check placeholder
 default_enabled: true
+stage: preflight
 order: 10
 requires: []
+before: []
+after: []
 conflicts: []
 supports:
   distros: [ubuntu]

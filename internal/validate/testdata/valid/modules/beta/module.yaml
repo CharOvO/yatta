@@ -2,8 +2,11 @@ id: beta
 name: Beta
 description: Beta fixture module
 default_enabled: false
+stage: system
 order: 20
 requires: []
+before: []
+after: []
 conflicts: []
 supports:
   distros: [ubuntu]

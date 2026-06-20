@@ -9,6 +9,8 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/CharOvO/yatta/internal/module"
+	"github.com/CharOvO/yatta/internal/version"
 	"gopkg.in/yaml.v3"
 )
 
@@ -20,9 +22,12 @@ var moduleIDPattern = regexp.MustCompile(`^[a-z][a-z0-9]*(-[a-z0-9]+)*$`)
 type moduleInfo struct {
 	id             string
 	name           string
+	stage          string
 	order          int
 	defaultEnabled bool
 	requires       []string
+	before         []string
+	after          []string
 	conflicts      []string
 	distros        []string
 	dirName        string
@@ -33,11 +38,18 @@ type moduleInfo struct {
 func Run(root string) Report {
 	var report Report
 	checkProject(root, &report)
+	checkVersion(root, &report)
 	checkRuntime(root, &report)
 	checkLocale(root, &report)
 	modules := checkModules(root, &report)
 	checkRelations(modules, &report)
 	return report
+}
+
+func checkVersion(root string, report *Report) {
+	if _, err := version.Read(root); err != nil {
+		report.add(Error, "version", "VERSION", err.Error())
+	}
 }
 
 func checkProject(root string, report *Report) {
@@ -169,7 +181,9 @@ func checkModule(root, modulePath, dirName string, report *Report) moduleInfo {
 	info := moduleInfo{dirName: dirName, path: relMeta}
 
 	checkNonEmptyFile(filepath.Join(modulePath, "prompts.sh"), "modules", slash(filepath.Join(relDir, "prompts.sh")), report)
+	checkOptionalNonEmptyFile(filepath.Join(modulePath, "pre_apply.sh"), "modules", slash(filepath.Join(relDir, "pre_apply.sh")), report)
 	checkNonEmptyFile(filepath.Join(modulePath, "apply.sh"), "modules", slash(filepath.Join(relDir, "apply.sh")), report)
+	checkOptionalNonEmptyFile(filepath.Join(modulePath, "post_apply.sh"), "modules", slash(filepath.Join(relDir, "post_apply.sh")), report)
 
 	content, ok := checkReadableFile(filepath.Join(root, relMeta), "modules", relMeta, report)
 	if !ok {
@@ -192,8 +206,11 @@ func checkModule(root, modulePath, dirName string, report *Report) moduleInfo {
 		"name":            true,
 		"description":     true,
 		"default_enabled": true,
+		"stage":           true,
 		"order":           true,
 		"requires":        true,
+		"before":          true,
+		"after":           true,
 		"conflicts":       true,
 		"supports":        true,
 	}
@@ -207,8 +224,16 @@ func checkModule(root, modulePath, dirName string, report *Report) moduleInfo {
 	info.name = requireString(rootMap, "name", relMeta, report)
 	_ = requireString(rootMap, "description", relMeta, report)
 	info.defaultEnabled = requireBool(rootMap, "default_enabled", relMeta, report)
-	info.order = requireNonNegativeInt(rootMap, "order", relMeta, report)
+	info.stage = optionalStage(rootMap, "stage", relMeta, report)
+	info.order = optionalNonNegativeInt(rootMap, "order", relMeta, report)
+	if info.stage == "" {
+		if _, ok := rootMap["order"]; !ok {
+			report.add(Error, "modules", relMeta, "must define stage or legacy order")
+		}
+	}
 	info.requires = requireStringArray(rootMap, "requires", relMeta, report)
+	info.before = optionalStringArray(rootMap, "before", relMeta, report)
+	info.after = optionalStringArray(rootMap, "after", relMeta, report)
 	info.conflicts = requireStringArray(rootMap, "conflicts", relMeta, report)
 	info.distros = requireDistros(rootMap, relMeta, report)
 
@@ -266,7 +291,40 @@ func checkRelations(modules []moduleInfo, report *Report) {
 				report.add(Error, "relations", mod.path, fmt.Sprintf("default-enabled module %q conflicts with default-enabled module %q", mod.id, conflict))
 			}
 		}
+		checkOrderingTargets(mod, "before", mod.before, byID, report)
+		checkOrderingTargets(mod, "after", mod.after, byID, report)
 	}
+
+	if _, err := module.OrderedIDs(toMetadata(modules)); err != nil {
+		report.add(Error, "relations", "modules", err.Error())
+	}
+}
+
+func checkOrderingTargets(mod moduleInfo, field string, values []string, byID map[string]moduleInfo, report *Report) {
+	for _, targetID := range values {
+		if targetID == mod.id {
+			report.add(Error, "relations", mod.path, fmt.Sprintf("module %q cannot reference itself in %s", mod.id, field))
+			continue
+		}
+		if _, ok := byID[targetID]; !ok {
+			report.add(Error, "relations", mod.path, fmt.Sprintf("%s references missing module %q", field, targetID))
+		}
+	}
+}
+
+func toMetadata(modules []moduleInfo) []module.Metadata {
+	values := make([]module.Metadata, 0, len(modules))
+	for _, mod := range modules {
+		values = append(values, module.Metadata{
+			ID:       mod.id,
+			Stage:    mod.stage,
+			Order:    mod.order,
+			Requires: mod.requires,
+			Before:   mod.before,
+			After:    mod.after,
+		})
+	}
+	return values
 }
 
 func checkReadableFile(path, area, rel string, report *Report) ([]byte, bool) {
@@ -295,6 +353,17 @@ func checkNonEmptyFile(path, area, rel string, report *Report) {
 	if strings.TrimSpace(string(content)) == "" {
 		report.add(Error, area, rel, "must be non-empty")
 	}
+}
+
+func checkOptionalNonEmptyFile(path, area, rel string, report *Report) {
+	if _, err := os.Stat(path); err != nil {
+		if os.IsNotExist(err) {
+			return
+		}
+		report.add(Error, area, rel, fmt.Sprintf("cannot inspect file: %v", err))
+		return
+	}
+	checkNonEmptyFile(path, area, rel, report)
 }
 
 func mapping(node *yaml.Node) map[string]*yaml.Node {
@@ -349,6 +418,28 @@ func requireNonNegativeInt(fields map[string]*yaml.Node, key, path string, repor
 	return value
 }
 
+func optionalNonNegativeInt(fields map[string]*yaml.Node, key, path string, report *Report) int {
+	if _, ok := fields[key]; !ok {
+		return 0
+	}
+	return requireNonNegativeInt(fields, key, path, report)
+}
+
+func optionalStage(fields map[string]*yaml.Node, key, path string, report *Report) string {
+	node, ok := fields[key]
+	if !ok {
+		return ""
+	}
+	if node.Kind != yaml.ScalarNode || node.Tag != "!!str" || strings.TrimSpace(node.Value) == "" {
+		report.add(Error, "modules", path, fmt.Sprintf("field %s must be a known stage string", key))
+		return ""
+	}
+	if !module.ValidStage(node.Value) {
+		report.add(Error, "modules", path, fmt.Sprintf("field %s has unknown stage %q", key, node.Value))
+	}
+	return node.Value
+}
+
 func requireStringArray(fields map[string]*yaml.Node, key, path string, report *Report) []string {
 	node, ok := fields[key]
 	if !ok {
@@ -374,6 +465,13 @@ func requireStringArray(fields map[string]*yaml.Node, key, path string, report *
 		values = append(values, item.Value)
 	}
 	return values
+}
+
+func optionalStringArray(fields map[string]*yaml.Node, key, path string, report *Report) []string {
+	if _, ok := fields[key]; !ok {
+		return nil
+	}
+	return requireStringArray(fields, key, path, report)
 }
 
 func requireDistros(fields map[string]*yaml.Node, path string, report *Report) []string {

@@ -2,8 +2,11 @@ id: alpha
 name: Alpha
 description: Alpha fixture module
 default_enabled: true
+stage: system
 order: 20
 requires: []
+before: [beta]
+after: []
 conflicts: []
 supports:
   distros: [ubuntu]

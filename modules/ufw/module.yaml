@@ -2,8 +2,11 @@ id: ufw
 name: UFW
 description: Configure firewall
 default_enabled: true
+stage: firewall
 order: 900
 requires: []
+before: []
+after: [packages]
 conflicts: []
 supports:
   distros: [ubuntu]

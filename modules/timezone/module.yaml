@@ -2,8 +2,11 @@ id: timezone
 name: Timezone
 description: Configure system timezone
 default_enabled: true
+stage: system
 order: 120
 requires: []
+before: []
+after: [system-check]
 conflicts: []
 supports:
   distros: [ubuntu]

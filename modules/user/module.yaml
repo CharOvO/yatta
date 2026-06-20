@@ -2,8 +2,11 @@ id: user
 name: User
 description: Create a non-root sudo user
 default_enabled: true
+stage: account
 order: 130
 requires: []
+before: []
+after: [system-check]
 conflicts: []
 supports:
   distros: [ubuntu]

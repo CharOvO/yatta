@@ -150,6 +150,27 @@ func TestRunValidationErrors(t *testing.T) {
 			},
 			want: `field requires contains duplicate value "beta"`,
 		},
+		{
+			name: "unknown stage",
+			mutate: func(t *testing.T, root string) {
+				replaceFile(t, root, "modules/alpha/module.yaml", "stage: system", "stage: unknown")
+			},
+			want: `field stage has unknown stage "unknown"`,
+		},
+		{
+			name: "missing before target",
+			mutate: func(t *testing.T, root string) {
+				replaceFile(t, root, "modules/alpha/module.yaml", "before: [beta]", "before: [ghost]")
+			},
+			want: `before references missing module "ghost"`,
+		},
+		{
+			name: "ordering cycle",
+			mutate: func(t *testing.T, root string) {
+				replaceFile(t, root, "modules/beta/module.yaml", "before: []", "before: [alpha]")
+			},
+			want: "module ordering contains a cycle",
+		},
 	}
 
 	for _, tt := range tests {
@@ -162,6 +183,17 @@ func TestRunValidationErrors(t *testing.T) {
 			}
 			assertDiagnosticsContain(t, report, tt.want)
 		})
+	}
+}
+
+func TestRunAcceptsLegacyOrderWithoutStage(t *testing.T) {
+	root := copyValidFixture(t)
+	replaceFile(t, root, "modules/alpha/module.yaml", "stage: system\n", "")
+	replaceFile(t, root, "modules/beta/module.yaml", "stage: system\n", "")
+
+	report := Run(root)
+	if report.HasErrors() {
+		t.Fatalf("expected legacy order to stay valid, got diagnostics:\n%s", diagnosticsText(report))
 	}
 }
 

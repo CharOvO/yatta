@@ -2,8 +2,11 @@ id: hostname
 name: Hostname
 description: Configure system hostname
 default_enabled: true
+stage: system
 order: 110
 requires: []
+before: []
+after: [system-check]
 conflicts: []
 supports:
   distros: [ubuntu]

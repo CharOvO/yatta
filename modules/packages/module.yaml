@@ -2,8 +2,11 @@ id: packages
 name: Packages
 description: Install base packages
 default_enabled: true
+stage: packages
 order: 210
 requires: []
+before: []
+after: [system-check]
 conflicts: []
 supports:
   distros: [ubuntu]
