@@ -1,0 +1,15 @@
+id: ssh-hardening
+name: SSH Hardening
+description: Configure OpenSSH server hardening policy
+default_enabled: true
+runtime_default: false
+risk: high
+group: remote-access
+stage: remote-access
+order: 700
+requires: []
+before: [ufw]
+after: [user]
+conflicts: []
+supports:
+  distros: [ubuntu]

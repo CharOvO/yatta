@@ -185,3 +185,101 @@ yatta_write_file_if_changed() {
   fi
   printf '%s' "$content" >"$path"
 }
+
+yatta_sshd_hardening_path() {
+  printf '%s\n' "/etc/ssh/sshd_config.d/00-yatta-hardening.conf"
+}
+
+yatta_sshd_restore_dropin() {
+  local target="$1"
+  local backup="$2"
+  local existed="$3"
+  if yatta_dry_run; then
+    yatta_log_info "[dry-run] restore ${target}"
+    return 0
+  fi
+  if [[ "$existed" == "1" && -f "$backup" ]]; then
+    cp -a "$backup" "$target"
+  else
+    rm -f "$target"
+  fi
+}
+
+yatta_sshd_test_config() {
+  if yatta_test_mode || yatta_dry_run; then
+    yatta_log_info "[dry-run] sshd -t"
+    return 0
+  fi
+  if ! yatta_command_exists sshd; then
+    yatta_log_error "缺少 sshd，无法校验 SSH 配置。"
+    return 1
+  fi
+  sshd -t
+}
+
+yatta_install_sshd_hardening_config() {
+  local content="$1"
+  shift
+  local target backup existed pair key expected actual
+  target="$(yatta_sshd_hardening_path)"
+  backup=""
+  existed="0"
+
+  if [[ -z "$content" ]]; then
+    yatta_log_info "没有需要写入的 SSH 加固配置。"
+    return 0
+  fi
+
+  if yatta_dry_run; then
+    yatta_log_info "[dry-run] write ${target}"
+    return 0
+  fi
+
+  if [[ -f "$target" ]]; then
+    existed="1"
+    backup="$(mktemp)" || return 1
+    cp -a "$target" "$backup" || return 1
+  fi
+
+  install -d -m 0755 "$(dirname "$target")" || return 1
+  printf '%s' "$content" >"$target" || return 1
+  chmod 0644 "$target" || return 1
+
+  if ! yatta_sshd_test_config; then
+    yatta_sshd_restore_dropin "$target" "$backup" "$existed"
+    yatta_log_error "sshd 配置语法校验失败，已回滚 Yatta drop-in。"
+    rm -f "$backup"
+    return 1
+  fi
+
+  for pair in "$@"; do
+    key="${pair%%=*}"
+    expected="${pair#*=}"
+    actual="$(yatta_sshd_effective_value "$key" "")"
+    if [[ "$actual" != "$expected" ]]; then
+      yatta_sshd_restore_dropin "$target" "$backup" "$existed"
+      yatta_log_error "SSH 配置 ${key} 未按预期生效：期望 ${expected}，实际 ${actual:-空}。已回滚。"
+      rm -f "$backup"
+      return 1
+    fi
+  done
+
+  rm -f "$backup"
+}
+
+yatta_reload_ssh_service() {
+  if yatta_dry_run; then
+    yatta_log_info "[dry-run] reload ssh service"
+    return 0
+  fi
+  if yatta_systemd_available; then
+    systemctl reload ssh 2>/dev/null && return 0
+    systemctl reload sshd 2>/dev/null && return 0
+  fi
+  if yatta_command_exists service; then
+    service ssh reload 2>/dev/null && return 0
+    service sshd reload 2>/dev/null && return 0
+  fi
+  yatta_log_error "无法 reload SSH 服务，请手动检查 ssh 服务名称。"
+  return 1
+}

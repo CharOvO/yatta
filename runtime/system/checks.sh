@@ -175,6 +175,61 @@ yatta_valid_ssh_public_key() {
   [[ "$key" =~ ^(ssh-rsa|ssh-ed25519|ecdsa-sha2-nistp256|ecdsa-sha2-nistp384|ecdsa-sha2-nistp521|sk-ssh-ed25519@openssh.com|sk-ecdsa-sha2-nistp256@openssh.com)[[:space:]]+[A-Za-z0-9+/=]+([[:space:]].*)?$ ]]
 }
 
+yatta_sshd_test_value() {
+  local key="${1,,}"
+  case "$key" in
+    port) printf '%s\n' "${YATTA_TEST_SSHD_PORT:-22}" ;;
+    permitrootlogin) printf '%s\n' "${YATTA_TEST_SSHD_PERMIT_ROOT_LOGIN:-prohibit-password}" ;;
+    passwordauthentication) printf '%s\n' "${YATTA_TEST_SSHD_PASSWORD_AUTHENTICATION:-yes}" ;;
+    kbdinteractiveauthentication) printf '%s\n' "${YATTA_TEST_SSHD_KBD_INTERACTIVE_AUTHENTICATION:-yes}" ;;
+    pubkeyauthentication) printf '%s\n' "${YATTA_TEST_SSHD_PUBKEY_AUTHENTICATION:-yes}" ;;
+    permitemptypasswords) printf '%s\n' "${YATTA_TEST_SSHD_PERMIT_EMPTY_PASSWORDS:-no}" ;;
+    maxauthtries) printf '%s\n' "${YATTA_TEST_SSHD_MAX_AUTH_TRIES:-6}" ;;
+    logingracetime) printf '%s\n' "${YATTA_TEST_SSHD_LOGIN_GRACE_TIME:-120}" ;;
+    x11forwarding) printf '%s\n' "${YATTA_TEST_SSHD_X11_FORWARDING:-yes}" ;;
+    *) printf '%s\n' "${2:-unknown}" ;;
+  esac
+}
+
+yatta_sshd_effective_value() {
+  local key="${1,,}"
+  local fallback="${2:-unknown}"
+  local value
+  if yatta_test_mode; then
+    yatta_sshd_test_value "$key" "$fallback"
+    return 0
+  fi
+  if yatta_command_exists sshd; then
+    value="$(sshd -T 2>/dev/null | awk -v key="$key" '$1 == key { print $2; exit }')"
+    if [[ -n "$value" ]]; then
+      printf '%s\n' "$value"
+      return 0
+    fi
+  fi
+  printf '%s\n' "$fallback"
+}
+
+yatta_user_has_authorized_keys() {
+  local username="$1"
+  local home auth_file line
+  if yatta_test_mode; then
+    [[ " ${YATTA_TEST_USERS_WITH_AUTHORIZED_KEYS:-} " == *" ${username} "* ]]
+    return $?
+  fi
+  home="$(yatta_user_home "$username")"
+  [[ -n "$home" ]] || return 1
+  auth_file="${home}/.ssh/authorized_keys"
+  [[ -r "$auth_file" ]] || return 1
+  while IFS= read -r line; do
+    line="$(yatta_string_trim "$line")"
+    [[ -z "$line" || "$line" == \#* ]] && continue
+    if yatta_valid_ssh_public_key "$line"; then
+      return 0
+    fi
+  done <"$auth_file"
+  return 1
+}
+
 yatta_package_installed() {
   local package="$1"
   if yatta_test_mode; then
@@ -245,7 +300,7 @@ yatta_detect_ssh_port() {
   local conf
   local detected
   if yatta_test_mode; then
-    printf '%s\n' "${YATTA_TEST_SSH_PORT:-22}"
+    printf '%s\n' "${YATTA_TEST_SSHD_PORT:-${YATTA_TEST_SSH_PORT:-22}}"
     return 0
   fi
   if yatta_command_exists sshd; then

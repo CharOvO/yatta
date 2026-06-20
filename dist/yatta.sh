@@ -801,6 +801,61 @@ yatta_valid_ssh_public_key() {
   [[ "$key" =~ ^(ssh-rsa|ssh-ed25519|ecdsa-sha2-nistp256|ecdsa-sha2-nistp384|ecdsa-sha2-nistp521|sk-ssh-ed25519@openssh.com|sk-ecdsa-sha2-nistp256@openssh.com)[[:space:]]+[A-Za-z0-9+/=]+([[:space:]].*)?$ ]]
 }
 
+yatta_sshd_test_value() {
+  local key="${1,,}"
+  case "$key" in
+    port) printf '%s\n' "${YATTA_TEST_SSHD_PORT:-22}" ;;
+    permitrootlogin) printf '%s\n' "${YATTA_TEST_SSHD_PERMIT_ROOT_LOGIN:-prohibit-password}" ;;
+    passwordauthentication) printf '%s\n' "${YATTA_TEST_SSHD_PASSWORD_AUTHENTICATION:-yes}" ;;
+    kbdinteractiveauthentication) printf '%s\n' "${YATTA_TEST_SSHD_KBD_INTERACTIVE_AUTHENTICATION:-yes}" ;;
+    pubkeyauthentication) printf '%s\n' "${YATTA_TEST_SSHD_PUBKEY_AUTHENTICATION:-yes}" ;;
+    permitemptypasswords) printf '%s\n' "${YATTA_TEST_SSHD_PERMIT_EMPTY_PASSWORDS:-no}" ;;
+    maxauthtries) printf '%s\n' "${YATTA_TEST_SSHD_MAX_AUTH_TRIES:-6}" ;;
+    logingracetime) printf '%s\n' "${YATTA_TEST_SSHD_LOGIN_GRACE_TIME:-120}" ;;
+    x11forwarding) printf '%s\n' "${YATTA_TEST_SSHD_X11_FORWARDING:-yes}" ;;
+    *) printf '%s\n' "${2:-unknown}" ;;
+  esac
+}
+
+yatta_sshd_effective_value() {
+  local key="${1,,}"
+  local fallback="${2:-unknown}"
+  local value
+  if yatta_test_mode; then
+    yatta_sshd_test_value "$key" "$fallback"
+    return 0
+  fi
+  if yatta_command_exists sshd; then
+    value="$(sshd -T 2>/dev/null | awk -v key="$key" '$1 == key { print $2; exit }')"
+    if [[ -n "$value" ]]; then
+      printf '%s\n' "$value"
+      return 0
+    fi
+  fi
+  printf '%s\n' "$fallback"
+}
+
+yatta_user_has_authorized_keys() {
+  local username="$1"
+  local home auth_file line
+  if yatta_test_mode; then
+    [[ " ${YATTA_TEST_USERS_WITH_AUTHORIZED_KEYS:-} " == *" ${username} "* ]]
+    return $?
+  fi
+  home="$(yatta_user_home "$username")"
+  [[ -n "$home" ]] || return 1
+  auth_file="${home}/.ssh/authorized_keys"
+  [[ -r "$auth_file" ]] || return 1
+  while IFS= read -r line; do
+    line="$(yatta_string_trim "$line")"
+    [[ -z "$line" || "$line" == \#* ]] && continue
+    if yatta_valid_ssh_public_key "$line"; then
+      return 0
+    fi
+  done <"$auth_file"
+  return 1
+}
+
 yatta_package_installed() {
   local package="$1"
   if yatta_test_mode; then
@@ -871,7 +926,7 @@ yatta_detect_ssh_port() {
   local conf
   local detected
   if yatta_test_mode; then
-    printf '%s\n' "${YATTA_TEST_SSH_PORT:-22}"
+    printf '%s\n' "${YATTA_TEST_SSHD_PORT:-${YATTA_TEST_SSH_PORT:-22}}"
     return 0
   fi
   if yatta_command_exists sshd; then
@@ -1153,6 +1208,104 @@ yatta_write_file_if_changed() {
     return 0
   fi
   printf '%s' "$content" >"$path"
+}
+
+yatta_sshd_hardening_path() {
+  printf '%s\n' "/etc/ssh/sshd_config.d/00-yatta-hardening.conf"
+}
+
+yatta_sshd_restore_dropin() {
+  local target="$1"
+  local backup="$2"
+  local existed="$3"
+  if yatta_dry_run; then
+    yatta_log_info "[dry-run] restore ${target}"
+    return 0
+  fi
+  if [[ "$existed" == "1" && -f "$backup" ]]; then
+    cp -a "$backup" "$target"
+  else
+    rm -f "$target"
+  fi
+}
+
+yatta_sshd_test_config() {
+  if yatta_test_mode || yatta_dry_run; then
+    yatta_log_info "[dry-run] sshd -t"
+    return 0
+  fi
+  if ! yatta_command_exists sshd; then
+    yatta_log_error "缺少 sshd，无法校验 SSH 配置。"
+    return 1
+  fi
+  sshd -t
+}
+
+yatta_install_sshd_hardening_config() {
+  local content="$1"
+  shift
+  local target backup existed pair key expected actual
+  target="$(yatta_sshd_hardening_path)"
+  backup=""
+  existed="0"
+
+  if [[ -z "$content" ]]; then
+    yatta_log_info "没有需要写入的 SSH 加固配置。"
+    return 0
+  fi
+
+  if yatta_dry_run; then
+    yatta_log_info "[dry-run] write ${target}"
+    return 0
+  fi
+
+  if [[ -f "$target" ]]; then
+    existed="1"
+    backup="$(mktemp)" || return 1
+    cp -a "$target" "$backup" || return 1
+  fi
+
+  install -d -m 0755 "$(dirname "$target")" || return 1
+  printf '%s' "$content" >"$target" || return 1
+  chmod 0644 "$target" || return 1
+
+  if ! yatta_sshd_test_config; then
+    yatta_sshd_restore_dropin "$target" "$backup" "$existed"
+    yatta_log_error "sshd 配置语法校验失败，已回滚 Yatta drop-in。"
+    rm -f "$backup"
+    return 1
+  fi
+
+  for pair in "$@"; do
+    key="${pair%%=*}"
+    expected="${pair#*=}"
+    actual="$(yatta_sshd_effective_value "$key" "")"
+    if [[ "$actual" != "$expected" ]]; then
+      yatta_sshd_restore_dropin "$target" "$backup" "$existed"
+      yatta_log_error "SSH 配置 ${key} 未按预期生效：期望 ${expected}，实际 ${actual:-空}。已回滚。"
+      rm -f "$backup"
+      return 1
+    fi
+  done
+
+  rm -f "$backup"
+}
+
+yatta_reload_ssh_service() {
+  if yatta_dry_run; then
+    yatta_log_info "[dry-run] reload ssh service"
+    return 0
+  fi
+  if yatta_systemd_available; then
+    systemctl reload ssh 2>/dev/null && return 0
+    systemctl reload sshd 2>/dev/null && return 0
+  fi
+  if yatta_command_exists service; then
+    service ssh reload 2>/dev/null && return 0
+    service sshd reload 2>/dev/null && return 0
+  fi
+  yatta_log_error "无法 reload SSH 服务，请手动检查 ssh 服务名称。"
+  return 1
 }
 
 yatta_module_system_check_prompt() {
@@ -1635,6 +1788,336 @@ yatta_log_warn "即将执行 apt upgrade，这是本次脚本的最后收尾任�
 yatta_apt_upgrade
 }
 
+yatta_module_ssh_hardening_prompt() {
+# SSH 加固是远程访问高风险模块。prompt 阶段只读取当前配置、确认风险并登记计划，
+# 真正的 sshd drop-in 写入、校验和 reload 必须等用户确认完整执行计划后再进行。
+YATTA_SSH_ACTION="configure"
+YATTA_SSH_TARGET_USER=""
+YATTA_SSH_HAS_KEY_EVIDENCE="0"
+YATTA_SSH_TARGET_PORT=""
+YATTA_SSH_SET_PORT="0"
+YATTA_SSH_OLD_PORT=""
+YATTA_SSH_SET_PERMIT_ROOT_LOGIN="0"
+YATTA_SSH_PERMIT_ROOT_LOGIN=""
+YATTA_SSH_SET_PASSWORD_AUTHENTICATION="0"
+YATTA_SSH_PASSWORD_AUTHENTICATION=""
+YATTA_SSH_SET_KBD_INTERACTIVE_AUTHENTICATION="0"
+YATTA_SSH_KBD_INTERACTIVE_AUTHENTICATION=""
+YATTA_SSH_SET_PUBKEY_AUTHENTICATION="0"
+YATTA_SSH_PUBKEY_AUTHENTICATION=""
+YATTA_SSH_SET_PERMIT_EMPTY_PASSWORDS="0"
+YATTA_SSH_PERMIT_EMPTY_PASSWORDS=""
+YATTA_SSH_SET_MAX_AUTH_TRIES="0"
+YATTA_SSH_MAX_AUTH_TRIES=""
+YATTA_SSH_SET_LOGIN_GRACE_TIME="0"
+YATTA_SSH_LOGIN_GRACE_TIME=""
+YATTA_SSH_SET_X11_FORWARDING="0"
+YATTA_SSH_X11_FORWARDING=""
+
+YATTA_SSH_OLD_PORT="$(yatta_detect_ssh_port)"
+if ! yatta_valid_port "$YATTA_SSH_OLD_PORT"; then
+  YATTA_SSH_OLD_PORT="22"
+fi
+YATTA_SSH_TARGET_PORT="$YATTA_SSH_OLD_PORT"
+current_root_login="$(yatta_sshd_effective_value "permitrootlogin" "prohibit-password")"
+current_password_auth="$(yatta_sshd_effective_value "passwordauthentication" "yes")"
+current_kbd_auth="$(yatta_sshd_effective_value "kbdinteractiveauthentication" "yes")"
+current_pubkey_auth="$(yatta_sshd_effective_value "pubkeyauthentication" "yes")"
+current_empty_passwords="$(yatta_sshd_effective_value "permitemptypasswords" "no")"
+current_max_auth_tries="$(yatta_sshd_effective_value "maxauthtries" "6")"
+current_login_grace_time="$(yatta_sshd_effective_value "logingracetime" "120")"
+current_x11_forwarding="$(yatta_sshd_effective_value "x11forwarding" "yes")"
+
+yatta_log_warn "SSH 加固可能影响远程登录。建议保持当前 SSH 会话，同时另开终端验证新登录路径。"
+yatta_log_info "当前 SSH 摘要：端口 ${YATTA_SSH_OLD_PORT}，root=${current_root_login}，password=${current_password_auth}，kbd-interactive=${current_kbd_auth}，pubkey=${current_pubkey_auth}。"
+
+if [[ "${YATTA_USER_ACTION:-skip}" != "skip" && -n "${YATTA_USER_NAME:-}" ]] && yatta_valid_username "${YATTA_USER_NAME:-}"; then
+  YATTA_SSH_TARGET_USER="$YATTA_USER_NAME"
+  if [[ "${YATTA_USER_IMPORT_KEYS:-0}" == "1" && "${#YATTA_USER_SSH_KEYS[@]}" -gt 0 ]]; then
+    YATTA_SSH_HAS_KEY_EVIDENCE="1"
+  elif yatta_user_has_authorized_keys "$YATTA_SSH_TARGET_USER"; then
+    YATTA_SSH_HAS_KEY_EVIDENCE="1"
+  fi
+  yatta_log_info "将使用 user 模块的目标 sudo 用户作为 SSH 安全闸门用户：${YATTA_SSH_TARGET_USER}"
+else
+  sudo_candidates=()
+  while IFS= read -r candidate_user; do
+    candidate_user="$(yatta_string_trim "$candidate_user")"
+    [[ -z "$candidate_user" ]] && continue
+    if yatta_user_in_group "$candidate_user" "sudo"; then
+      sudo_candidates+=("$candidate_user")
+    fi
+  done < <(yatta_list_normal_users)
+  if [[ "${#sudo_candidates[@]}" -gt 0 ]]; then
+    sudo_candidates+=("不选择目标用户")
+    selected_user="$(yatta_ui_select "选择用于验证 SSH 密钥登录的 sudo 用户" 0 "${sudo_candidates[@]}")"
+    if [[ "$selected_user" != "不选择目标用户" ]]; then
+      YATTA_SSH_TARGET_USER="$selected_user"
+      if yatta_user_has_authorized_keys "$YATTA_SSH_TARGET_USER"; then
+        YATTA_SSH_HAS_KEY_EVIDENCE="1"
+      fi
+    fi
+  else
+    yatta_log_warn "未找到可用于验证密钥登录的普通 sudo 用户。"
+  fi
+fi
+
+if [[ -n "$YATTA_SSH_TARGET_USER" && "$YATTA_SSH_HAS_KEY_EVIDENCE" == "1" ]]; then
+  yatta_log_ok "检测到 ${YATTA_SSH_TARGET_USER} 的密钥登录证据。"
+elif [[ -n "$YATTA_SSH_TARGET_USER" ]]; then
+  yatta_log_warn "未检测到 ${YATTA_SSH_TARGET_USER} 的密钥登录证据；本次不会禁用密码登录或完全禁用 root。"
+else
+  yatta_log_warn "未选择目标 sudo 用户；本次不会禁用密码登录或完全禁用 root。"
+fi
+
+port_choice="$(yatta_ui_select "SSH 端口策略" 0 "保持当前端口：${YATTA_SSH_OLD_PORT}" "手动输入新端口")"
+case "$port_choice" in
+  手动输入新端口)
+    while true; do
+      YATTA_SSH_TARGET_PORT="$(yatta_ui_input "新的 SSH 端口（1-65535）" "")"
+      if yatta_valid_port "$YATTA_SSH_TARGET_PORT"; then
+        break
+      fi
+      yatta_log_warn "端口必须是 1 到 65535 之间的数字。"
+    done
+    if [[ "$YATTA_SSH_TARGET_PORT" != "$YATTA_SSH_OLD_PORT" ]]; then
+      YATTA_SSH_SET_PORT="1"
+      yatta_port_plan_add "ssh-hardening" "tcp" "$YATTA_SSH_TARGET_PORT" "SSH 新端口"
+      yatta_port_plan_add "ssh-hardening" "tcp" "$YATTA_SSH_OLD_PORT" "SSH 临时保底放行旧端口"
+      yatta_log_warn "旧端口只会登记给 UFW 临时放行；sshd 本身将只监听新端口。"
+    fi
+    ;;
+esac
+
+root_choice="$(yatta_ui_select "root 登录策略" 0 "完全禁用 root 登录（推荐）" "仅禁止 root 密码登录" "保持当前：${current_root_login}")"
+case "$root_choice" in
+  完全禁用*)
+    if [[ -n "$YATTA_SSH_TARGET_USER" && "$YATTA_SSH_HAS_KEY_EVIDENCE" == "1" ]]; then
+      YATTA_SSH_SET_PERMIT_ROOT_LOGIN="1"
+      YATTA_SSH_PERMIT_ROOT_LOGIN="no"
+    else
+      yatta_log_warn "缺少可用 sudo 用户或密钥证据，已保持 root 登录策略不变。"
+    fi
+    ;;
+  仅禁止*)
+    YATTA_SSH_SET_PERMIT_ROOT_LOGIN="1"
+    YATTA_SSH_PERMIT_ROOT_LOGIN="prohibit-password"
+    ;;
+esac
+
+password_choice="$(yatta_ui_select "密码与键盘交互登录策略" 0 "禁用密码和键盘交互登录（推荐）" "保持当前：password=${current_password_auth}, kbd=${current_kbd_auth}" "启用密码和键盘交互登录")"
+case "$password_choice" in
+  禁用*)
+    if [[ "$YATTA_SSH_HAS_KEY_EVIDENCE" == "1" ]]; then
+      YATTA_SSH_SET_PASSWORD_AUTHENTICATION="1"
+      YATTA_SSH_PASSWORD_AUTHENTICATION="no"
+      YATTA_SSH_SET_KBD_INTERACTIVE_AUTHENTICATION="1"
+      YATTA_SSH_KBD_INTERACTIVE_AUTHENTICATION="no"
+    else
+      yatta_log_warn "缺少密钥登录证据，已保持密码与键盘交互登录策略不变。"
+    fi
+    ;;
+  启用*)
+    YATTA_SSH_SET_PASSWORD_AUTHENTICATION="1"
+    YATTA_SSH_PASSWORD_AUTHENTICATION="yes"
+    YATTA_SSH_SET_KBD_INTERACTIVE_AUTHENTICATION="1"
+    YATTA_SSH_KBD_INTERACTIVE_AUTHENTICATION="yes"
+    ;;
+esac
+
+pubkey_choice="$(yatta_ui_select "密钥登录策略" 0 "启用密钥登录（推荐）" "保持当前：${current_pubkey_auth}")"
+case "$pubkey_choice" in
+  启用*)
+    YATTA_SSH_SET_PUBKEY_AUTHENTICATION="1"
+    YATTA_SSH_PUBKEY_AUTHENTICATION="yes"
+    ;;
+esac
+
+empty_choice="$(yatta_ui_select "空密码策略" 0 "禁用空密码登录（推荐）" "保持当前：${current_empty_passwords}")"
+case "$empty_choice" in
+  禁用*)
+    YATTA_SSH_SET_PERMIT_EMPTY_PASSWORDS="1"
+    YATTA_SSH_PERMIT_EMPTY_PASSWORDS="no"
+    ;;
+esac
+
+max_auth_choice="$(yatta_ui_select "认证重试次数" 0 "设置 MaxAuthTries 为 3（推荐）" "保持当前：${current_max_auth_tries}" "手动输入 MaxAuthTries")"
+case "$max_auth_choice" in
+  设置*)
+    YATTA_SSH_SET_MAX_AUTH_TRIES="1"
+    YATTA_SSH_MAX_AUTH_TRIES="3"
+    ;;
+  手动输入*)
+    while true; do
+      YATTA_SSH_MAX_AUTH_TRIES="$(yatta_ui_input "MaxAuthTries（1-10）" "3")"
+      if [[ "$YATTA_SSH_MAX_AUTH_TRIES" =~ ^[0-9]+$ ]] && ((YATTA_SSH_MAX_AUTH_TRIES >= 1 && YATTA_SSH_MAX_AUTH_TRIES <= 10)); then
+        YATTA_SSH_SET_MAX_AUTH_TRIES="1"
+        break
+      fi
+      yatta_log_warn "MaxAuthTries 必须是 1 到 10 之间的整数。"
+    done
+    ;;
+esac
+
+grace_choice="$(yatta_ui_select "登录宽限时间" 0 "设置 LoginGraceTime 为 30s（推荐）" "保持当前：${current_login_grace_time}" "手动输入秒数")"
+case "$grace_choice" in
+  设置*)
+    YATTA_SSH_SET_LOGIN_GRACE_TIME="1"
+    YATTA_SSH_LOGIN_GRACE_TIME="30"
+    ;;
+  手动输入*)
+    while true; do
+      YATTA_SSH_LOGIN_GRACE_TIME="$(yatta_ui_input "LoginGraceTime 秒数（10-300）" "30")"
+      if [[ "$YATTA_SSH_LOGIN_GRACE_TIME" =~ ^[0-9]+$ ]] && ((YATTA_SSH_LOGIN_GRACE_TIME >= 10 && YATTA_SSH_LOGIN_GRACE_TIME <= 300)); then
+        YATTA_SSH_SET_LOGIN_GRACE_TIME="1"
+        break
+      fi
+      yatta_log_warn "LoginGraceTime 必须是 10 到 300 之间的整数秒。"
+    done
+    ;;
+esac
+
+x11_choice="$(yatta_ui_select "X11 转发策略" 0 "禁用 X11Forwarding（推荐）" "保持当前：${current_x11_forwarding}")"
+case "$x11_choice" in
+  禁用*)
+    YATTA_SSH_SET_X11_FORWARDING="1"
+    YATTA_SSH_X11_FORWARDING="no"
+    ;;
+esac
+
+if [[ "$YATTA_SSH_SET_PORT" == "1" ]]; then
+  yatta_plan_add "ssh-hardening" "warn" "将 SSH 监听端口改为 ${YATTA_SSH_TARGET_PORT}；旧端口 ${YATTA_SSH_OLD_PORT} 仅登记为 UFW 临时保底放行。"
+else
+  yatta_plan_add "ssh-hardening" "info" "保持 SSH 端口不变：${YATTA_SSH_OLD_PORT}。"
+fi
+
+if [[ "$YATTA_SSH_SET_PERMIT_ROOT_LOGIN" == "1" ]]; then
+  yatta_plan_add "ssh-hardening" "warn" "将设置 PermitRootLogin ${YATTA_SSH_PERMIT_ROOT_LOGIN}。"
+fi
+if [[ "$YATTA_SSH_SET_PASSWORD_AUTHENTICATION" == "1" ]]; then
+  yatta_plan_add "ssh-hardening" "warn" "将设置 PasswordAuthentication ${YATTA_SSH_PASSWORD_AUTHENTICATION}。"
+fi
+if [[ "$YATTA_SSH_SET_KBD_INTERACTIVE_AUTHENTICATION" == "1" ]]; then
+  yatta_plan_add "ssh-hardening" "warn" "将设置 KbdInteractiveAuthentication ${YATTA_SSH_KBD_INTERACTIVE_AUTHENTICATION}。"
+fi
+if [[ "$YATTA_SSH_SET_PUBKEY_AUTHENTICATION" == "1" ]]; then
+  yatta_plan_add "ssh-hardening" "info" "将设置 PubkeyAuthentication ${YATTA_SSH_PUBKEY_AUTHENTICATION}。"
+fi
+if [[ "$YATTA_SSH_SET_PERMIT_EMPTY_PASSWORDS" == "1" ]]; then
+  yatta_plan_add "ssh-hardening" "info" "将设置 PermitEmptyPasswords ${YATTA_SSH_PERMIT_EMPTY_PASSWORDS}。"
+fi
+if [[ "$YATTA_SSH_SET_MAX_AUTH_TRIES" == "1" ]]; then
+  yatta_plan_add "ssh-hardening" "info" "将设置 MaxAuthTries ${YATTA_SSH_MAX_AUTH_TRIES}。"
+fi
+if [[ "$YATTA_SSH_SET_LOGIN_GRACE_TIME" == "1" ]]; then
+  yatta_plan_add "ssh-hardening" "info" "将设置 LoginGraceTime ${YATTA_SSH_LOGIN_GRACE_TIME}s。"
+fi
+if [[ "$YATTA_SSH_SET_X11_FORWARDING" == "1" ]]; then
+  yatta_plan_add "ssh-hardening" "info" "将设置 X11Forwarding ${YATTA_SSH_X11_FORWARDING}。"
+fi
+yatta_plan_add "ssh-hardening" "warn" "写入 SSH drop-in 后会先执行 sshd -t 和有效值校验，成功后仅 reload SSH 服务。"
+}
+
+yatta_module_ssh_hardening_pre_apply() {
+  return 0
+}
+
+yatta_module_ssh_hardening_apply() {
+# apply 阶段生成 Yatta 独立管理的 sshd drop-in。任何校验失败都必须停止并回滚，
+# 避免把远程登录入口留在半修改状态。
+content="# Yatta managed SSH hardening. Do not edit this file directly.
+"
+expected_pairs=()
+changed="0"
+
+yatta_ssh_add_directive() {
+  local key="$1"
+  local value="$2"
+  local effective_key="${3:-${key,,}}"
+  content+="${key} ${value}"$'\n'
+  expected_pairs+=("${effective_key}=${value}")
+  changed="1"
+}
+
+if [[ "${YATTA_SSH_SET_PORT:-0}" == "1" ]]; then
+  if ! yatta_valid_port "${YATTA_SSH_TARGET_PORT:-}"; then
+    yatta_log_error "SSH 目标端口无效，已停止。"
+    return 1
+  fi
+  yatta_ssh_add_directive "Port" "$YATTA_SSH_TARGET_PORT" "port"
+fi
+
+if [[ "${YATTA_SSH_SET_PERMIT_ROOT_LOGIN:-0}" == "1" ]]; then
+  case "${YATTA_SSH_PERMIT_ROOT_LOGIN:-}" in
+    no | prohibit-password) yatta_ssh_add_directive "PermitRootLogin" "$YATTA_SSH_PERMIT_ROOT_LOGIN" "permitrootlogin" ;;
+    *) yatta_log_error "PermitRootLogin 目标值无效，已停止。"; return 1 ;;
+  esac
+fi
+
+if [[ "${YATTA_SSH_SET_PASSWORD_AUTHENTICATION:-0}" == "1" ]]; then
+  case "${YATTA_SSH_PASSWORD_AUTHENTICATION:-}" in
+    yes | no) yatta_ssh_add_directive "PasswordAuthentication" "$YATTA_SSH_PASSWORD_AUTHENTICATION" "passwordauthentication" ;;
+    *) yatta_log_error "PasswordAuthentication 目标值无效，已停止。"; return 1 ;;
+  esac
+fi
+
+if [[ "${YATTA_SSH_SET_KBD_INTERACTIVE_AUTHENTICATION:-0}" == "1" ]]; then
+  case "${YATTA_SSH_KBD_INTERACTIVE_AUTHENTICATION:-}" in
+    yes | no) yatta_ssh_add_directive "KbdInteractiveAuthentication" "$YATTA_SSH_KBD_INTERACTIVE_AUTHENTICATION" "kbdinteractiveauthentication" ;;
+    *) yatta_log_error "KbdInteractiveAuthentication 目标值无效，已停止。"; return 1 ;;
+  esac
+fi
+
+if [[ "${YATTA_SSH_SET_PUBKEY_AUTHENTICATION:-0}" == "1" ]]; then
+  case "${YATTA_SSH_PUBKEY_AUTHENTICATION:-}" in
+    yes | no) yatta_ssh_add_directive "PubkeyAuthentication" "$YATTA_SSH_PUBKEY_AUTHENTICATION" "pubkeyauthentication" ;;
+    *) yatta_log_error "PubkeyAuthentication 目标值无效，已停止。"; return 1 ;;
+  esac
+fi
+
+if [[ "${YATTA_SSH_SET_PERMIT_EMPTY_PASSWORDS:-0}" == "1" ]]; then
+  case "${YATTA_SSH_PERMIT_EMPTY_PASSWORDS:-}" in
+    yes | no) yatta_ssh_add_directive "PermitEmptyPasswords" "$YATTA_SSH_PERMIT_EMPTY_PASSWORDS" "permitemptypasswords" ;;
+    *) yatta_log_error "PermitEmptyPasswords 目标值无效，已停止。"; return 1 ;;
+  esac
+fi
+
+if [[ "${YATTA_SSH_SET_MAX_AUTH_TRIES:-0}" == "1" ]]; then
+  if [[ ! "${YATTA_SSH_MAX_AUTH_TRIES:-}" =~ ^[0-9]+$ ]] || ((YATTA_SSH_MAX_AUTH_TRIES < 1 || YATTA_SSH_MAX_AUTH_TRIES > 10)); then
+    yatta_log_error "MaxAuthTries 目标值无效，已停止。"
+    return 1
+  fi
+  yatta_ssh_add_directive "MaxAuthTries" "$YATTA_SSH_MAX_AUTH_TRIES" "maxauthtries"
+fi
+
+if [[ "${YATTA_SSH_SET_LOGIN_GRACE_TIME:-0}" == "1" ]]; then
+  if [[ ! "${YATTA_SSH_LOGIN_GRACE_TIME:-}" =~ ^[0-9]+$ ]] || ((YATTA_SSH_LOGIN_GRACE_TIME < 10 || YATTA_SSH_LOGIN_GRACE_TIME > 300)); then
+    yatta_log_error "LoginGraceTime 目标值无效，已停止。"
+    return 1
+  fi
+  yatta_ssh_add_directive "LoginGraceTime" "$YATTA_SSH_LOGIN_GRACE_TIME" "logingracetime"
+fi
+
+if [[ "${YATTA_SSH_SET_X11_FORWARDING:-0}" == "1" ]]; then
+  case "${YATTA_SSH_X11_FORWARDING:-}" in
+    yes | no) yatta_ssh_add_directive "X11Forwarding" "$YATTA_SSH_X11_FORWARDING" "x11forwarding" ;;
+    *) yatta_log_error "X11Forwarding 目标值无效，已停止。"; return 1 ;;
+  esac
+fi
+
+if [[ "$changed" != "1" ]]; then
+  yatta_log_info "没有需要应用的 SSH 加固配置。"
+  return 0
+fi
+
+yatta_install_sshd_hardening_config "$content" "${expected_pairs[@]}" || return 1
+yatta_reload_ssh_service
+}
+
+yatta_module_ssh_hardening_post_apply() {
+  return 0
+}
+
 yatta_module_ufw_prompt() {
 # UFW 是收尾模块，必须先确认并登记 SSH 放行策略，再允许启用防火墙。
 YATTA_UFW_ENABLE="0"
@@ -1761,6 +2244,7 @@ yatta_register_generated_modules() {
   yatta_module_register 'swap' 'Swap' 'system' 'system-basics' 'medium' true false 'yatta_module_swap_prompt' 'yatta_module_swap_pre_apply' 'yatta_module_swap_apply' 'yatta_module_swap_post_apply'
   yatta_module_register 'user' 'User' 'account' 'account' 'medium' true false 'yatta_module_user_prompt' 'yatta_module_user_pre_apply' 'yatta_module_user_apply' 'yatta_module_user_post_apply'
   yatta_module_register 'packages' 'Packages' 'packages' 'packages' 'medium' true false 'yatta_module_packages_prompt' 'yatta_module_packages_pre_apply' 'yatta_module_packages_apply' 'yatta_module_packages_post_apply'
+  yatta_module_register 'ssh-hardening' 'SSH Hardening' 'remote-access' 'remote-access' 'high' false false 'yatta_module_ssh_hardening_prompt' 'yatta_module_ssh_hardening_pre_apply' 'yatta_module_ssh_hardening_apply' 'yatta_module_ssh_hardening_post_apply'
   yatta_module_register 'ufw' 'UFW' 'firewall' 'firewall' 'high' false false 'yatta_module_ufw_prompt' 'yatta_module_ufw_pre_apply' 'yatta_module_ufw_apply' 'yatta_module_ufw_post_apply'
 }
 
