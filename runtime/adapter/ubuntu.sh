@@ -24,6 +24,10 @@ yatta_apt_install() {
   yatta_run_command apt-get install -y "$@"
 }
 
+yatta_apt_upgrade() {
+  yatta_run_command apt-get upgrade -y
+}
+
 yatta_apt_install_missing() {
   local packages=("$@")
   if [[ "${#packages[@]}" -eq 0 ]]; then

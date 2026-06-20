@@ -17,27 +17,44 @@ yatta_run_prompts() {
 }
 
 yatta_run_applies() {
+  local phase="$1"
+  local phase_name="$2"
   local index id name apply_fn
+  yatta_ui_section "$phase_name"
   for index in "${!YATTA_MODULE_IDS[@]}"; do
     id="${YATTA_MODULE_IDS[$index]}"
     name="${YATTA_MODULE_NAMES[$index]}"
-    apply_fn="${YATTA_MODULE_APPLY_FNS[$index]}"
-    if [[ "$id" == "user" ]]; then
+    case "$phase" in
+      pre) apply_fn="${YATTA_MODULE_PRE_APPLY_FNS[$index]}" ;;
+      post) apply_fn="${YATTA_MODULE_POST_APPLY_FNS[$index]}" ;;
+      *) apply_fn="${YATTA_MODULE_APPLY_FNS[$index]}" ;;
+    esac
+    if [[ "$phase" == "main" && "$id" == "user" ]]; then
       yatta_log_info "执行 ${name}"
       yatta_call_function "$apply_fn"
     else
-      yatta_ui_spinner "执行 ${name}" yatta_call_function "$apply_fn"
+      yatta_ui_spinner "执行 ${phase_name}：${name}" yatta_call_function "$apply_fn"
     fi
     if [[ "$?" -ne 0 ]]; then
-      yatta_log_error "模块 ${id} 执行失败，后续模块已停止。"
+      yatta_log_error "模块 ${id} 的 ${phase_name} 失败，后续任务已停止。"
       return 1
     fi
-    yatta_log_ok "模块 ${name} 已完成。"
+    yatta_log_ok "模块 ${name} 的 ${phase_name} 已完成。"
   done
 }
 
 yatta_main() {
   local apply_default="n"
+  local arg_status
+  yatta_handle_runtime_args "$@"
+  arg_status="$?"
+  if [[ "$arg_status" -eq 0 ]]; then
+    return 0
+  fi
+  if [[ "$arg_status" -ne 1 ]]; then
+    return 1
+  fi
+
   yatta_ui_init
   yatta_ui_brand
   yatta_preflight || return 1
@@ -61,9 +78,16 @@ yatta_main() {
     return 0
   fi
 
-  yatta_ui_section "开始执行"
-  if ! yatta_run_applies; then
+  if ! yatta_run_applies "pre" "前置执行"; then
+    yatta_log_error "Yatta 前置执行失败，请根据上方日志处理后重试。"
+    return 1
+  fi
+  if ! yatta_run_applies "main" "模块执行"; then
     yatta_log_error "Yatta 执行失败，请根据上方日志处理后重试。"
+    return 1
+  fi
+  if ! yatta_run_applies "post" "收尾执行"; then
+    yatta_log_error "Yatta 收尾执行失败，请根据上方日志处理后重试。"
     return 1
   fi
 

@@ -17,7 +17,7 @@ YATTA_SYMBOL_ARROW=">"
 YATTA_SPINNER_FRAMES=("-" "\\" "|" "/")
 
 yatta_ui_init() {
-  if [[ -t 1 && -z "${NO_COLOR:-}" ]]; then
+  if [[ -t 2 && -z "${NO_COLOR:-}" ]]; then
     YATTA_COLOR_RESET=$'\033[0m'
     YATTA_COLOR_DIM=$'\033[2m'
     YATTA_COLOR_BOLD=$'\033[1m'
@@ -39,11 +39,11 @@ yatta_ui_init() {
 
 yatta_ui_utf8_enabled() {
   local locale_value="${LC_ALL:-${LC_CTYPE:-${LANG:-}}}"
-  [[ -t 1 && "$locale_value" =~ (UTF-8|utf8|utf-8) ]]
+  yatta_has_tty && [[ "$locale_value" =~ (UTF-8|utf8|utf-8) ]]
 }
 
 yatta_ui_brand() {
-  printf '%s\n' "${YATTA_COLOR_BOLD}Yatta! server init${YATTA_COLOR_RESET}" >&2
+  printf '%s\n' "${YATTA_COLOR_BOLD}Yatta ${YATTA_VERSION:-dev}! server init${YATTA_COLOR_RESET}" >&2
   printf '%s\n' "${YATTA_COLOR_DIM}把新 Ubuntu 服务器整理到可日常使用的基础状态。${YATTA_COLOR_RESET}" >&2
   printf '%s\n' >&2
 }

@@ -28,9 +28,10 @@ fi
 
 yatta_ufw_allow_port "$YATTA_UFW_SSH_PORT" "tcp" || return 1
 
-if [[ "${YATTA_UFW_ALLOW_WEB:-0}" == "1" ]]; then
-  yatta_ufw_allow_port "80" "tcp" || return 1
-  yatta_ufw_allow_port "443" "tcp" || return 1
+if [[ "${YATTA_UFW_CONFIRMED_PORT_PLAN:-0}" == "1" ]]; then
+  for index in "${!YATTA_PORT_PLAN_PORTS[@]}"; do
+    yatta_ufw_allow_port "${YATTA_PORT_PLAN_PORTS[$index]}" "${YATTA_PORT_PLAN_PROTOCOLS[$index]}" || return 1
+  done
 fi
 
 yatta_ufw_enable

@@ -5,6 +5,7 @@ YATTA_UFW_INSTALL_PACKAGE="0"
 YATTA_UFW_SET_DENY_INCOMING="0"
 YATTA_UFW_SET_ALLOW_OUTGOING="0"
 YATTA_UFW_ALLOW_WEB="0"
+YATTA_UFW_CONFIRMED_PORT_PLAN="0"
 
 yatta_log_info "启用 UFW 时将自动执行：ufw default deny incoming；ufw default allow outgoing。启用前仍会先放行 SSH。"
 
@@ -38,6 +39,15 @@ fi
 if [[ "$YATTA_UFW_ENABLE" == "1" ]]; then
   if yatta_ui_confirm "是否开放 HTTP/HTTPS 端口 80/443？" "n"; then
     YATTA_UFW_ALLOW_WEB="1"
+    yatta_port_plan_add "ufw" "tcp" "80" "HTTP"
+    yatta_port_plan_add "ufw" "tcp" "443" "HTTPS"
+  fi
+  yatta_port_plan_show
+  if yatta_ui_confirm "请再次确认：是否按以上端口计划配置 UFW？" "y"; then
+    YATTA_UFW_CONFIRMED_PORT_PLAN="1"
+  else
+    yatta_log_warn "未确认端口计划，本次将跳过 UFW 配置。"
+    YATTA_UFW_ENABLE="0"
   fi
 fi
 
@@ -51,8 +61,8 @@ else
   yatta_plan_add "ufw" "info" "执行固定默认策略：ufw default deny incoming"
   yatta_plan_add "ufw" "info" "执行固定默认策略：ufw default allow outgoing"
   yatta_plan_add "ufw" "info" "启用 UFW 前放行 SSH：${YATTA_UFW_SSH_PORT}/tcp"
-  if [[ "$YATTA_UFW_ALLOW_WEB" == "1" ]]; then
-    yatta_plan_add "ufw" "info" "开放 HTTP/HTTPS：80/tcp、443/tcp"
+  if [[ "${#YATTA_PORT_PLAN_PORTS[@]}" -gt 0 ]]; then
+    yatta_plan_add "ufw" "info" "按已确认端口计划放行 ${#YATTA_PORT_PLAN_PORTS[@]} 条规则。"
   fi
   yatta_plan_add "ufw" "warn" "启用 UFW。请确认当前 SSH 连接端口已放行。"
 fi

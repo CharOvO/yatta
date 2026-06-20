@@ -14,5 +14,4 @@ if [[ "${#fresh_missing[@]}" -eq 0 ]]; then
   return 0
 fi
 
-yatta_apt_update || return 1
 yatta_apt_install_missing "${fresh_missing[@]}"
